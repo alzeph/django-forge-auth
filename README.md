@@ -318,6 +318,8 @@ Ces options de `FORGE_AUTH` sont validées au démarrage mais ne déclenchent au
 
 - `OTP.OTP_CANAL` : `obtain-otp` génère et stocke le code (`otp_token.otp_code`), mais ne l'envoie nulle part. L'envoi effectif (SMS, WhatsApp, email) est à la charge du projet hôte, par exemple via un signal `post_save` sur `OtpToken` ou en surchargeant l'action `obtain_otp`.
 - `OTP.OTP_LIFETIME` : aucune expiration n'est vérifiée dans `verify_otp()`. À implémenter si nécessaire (comparaison avec `otp_token.updated_at`).
+
+automatisatino realiser pour ces ancien issue
 - `CREDENTIALS_SUPERUSER` : stocké dans la configuration mais aucune commande de gestion ne l'utilise pour créer un superutilisateur automatiquement.
 - `GROUP_DEFAULT` et `GROUPS` : stockés dans la configuration mais aucun signal ne crée les groupes ni n'assigne `GROUP_DEFAULT` aux nouveaux utilisateurs.
 

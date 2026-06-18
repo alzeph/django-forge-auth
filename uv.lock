@@ -79,7 +79,6 @@ source = { editable = "." }
 dependencies = [
     { name = "django", version = "5.2.15", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "django", version = "6.0.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "django-forge-test" },
     { name = "djangorestframework" },
     { name = "djangorestframework-simplejwt" },
     { name = "drf-spectacular" },
@@ -88,6 +87,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "django-forge-test" },
     { name = "pytest" },
     { name = "pytest-django" },
 ]
@@ -95,7 +95,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "django", specifier = ">=5.0,<6.1" },
-    { name = "django-forge-test", specifier = ">=0.3.0" },
+    { name = "django-forge-test", marker = "extra == 'dev'", specifier = ">=0.4.0" },
     { name = "djangorestframework", specifier = ">=3.17.1" },
     { name = "djangorestframework-simplejwt", specifier = ">=5.5.1" },
     { name = "drf-spectacular", specifier = ">=0.27" },
@@ -107,7 +107,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "django-forge-test"
-version = "0.3.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django", version = "5.2.15", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -115,9 +115,9 @@ dependencies = [
     { name = "faker" },
     { name = "pillow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ca/5c/d376f635999dfb2ca5d900e08aae61f651c8ec1bc76983443063c2d46ec6/django_forge_test-0.3.0.tar.gz", hash = "sha256:12473a4d6ef54eda3440b3eacd74d387458c08b951e1c284d588d30693eb167b", size = 64205, upload-time = "2026-06-18T09:23:54.343Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/76/3e9869150a55ddb2a230f4e8e97abde79e05616e7f7252ba3b490211b20d/django_forge_test-0.4.0.tar.gz", hash = "sha256:6af2109c5dec8a2d865705e28c3757e1ae95c3149042ad4c7d768fafc1d153c0", size = 64205, upload-time = "2026-06-18T09:28:09.712Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/f8/a4d82276816bd786b49586432e5add9c0be10b5c774659f935e3fd211f2f/django_forge_test-0.3.0-py3-none-any.whl", hash = "sha256:cdd63020506e38ff60f2a6b3861a9e4917a6a36319070da7fffc61c705a1a57a", size = 33813, upload-time = "2026-06-18T09:23:51.353Z" },
+    { url = "https://files.pythonhosted.org/packages/89/17/e544fcb19fdc0b1ed61498e13debb7e7029e12341f720972998499b4bd6c/django_forge_test-0.4.0-py3-none-any.whl", hash = "sha256:827fe723f33aee80fc042a2b9d0567d3020c0f61acf7e33aec695f14447c3840", size = 33811, upload-time = "2026-06-18T09:28:07.987Z" },
 ]
 
 [[package]]
@@ -171,7 +171,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
