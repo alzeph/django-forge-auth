@@ -62,7 +62,7 @@ class UserAdmin(BaseUserAdmin):
     list_filter       = ["is_staff", "is_active"]
     search_fields     = ["phone_number", "first_name", "last_name", "email"]
     ordering          = ["-date_joined"]
-    readonly_fields   = ["last_login", "date_joined"]
+    readonly_fields   = ["last_login", "date_joined", 'otp_secret']
 
     add_fieldsets = (
         (None, {
