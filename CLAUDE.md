@@ -45,9 +45,11 @@ Conséquence directe : **les migrations fournies (`migrations/0001`–`0003`) so
 
 La logique métier de connexion (mot de passe vs OTP selon config, génération des tokens) est dans `serializers.py::LoginSerializer.validate()`, pas dans la vue. `views.py::UserViewSet.login` ne fait qu'appeler le serializer puis poser les cookies/JSON selon `forge_auth_config.jwt_conf`.
 
-### `signals.py` : automatisation post-migration
+### `signals.py` : automatisation post-migration et point d'extension à la connexion
 
-Deux receivers sur `post_migrate` : création d'un superutilisateur par défaut (`CREDENTIALS_SUPERUSER`, seulement s'il n'en existe aucun) et création des groupes listés dans `GROUPS`. C'est la partie la plus récente du code (voir historique git) — `GROUP_DEFAULT` (assignation automatique d'un groupe par défaut aux nouveaux users) n'est en revanche pas encore câblé.
+Deux receivers sur `post_migrate` : création d'un superutilisateur par défaut (`CREDENTIALS_SUPERUSER`, seulement s'il n'en existe aucun) et création des groupes listés dans `GROUPS`. `GROUP_DEFAULT` (assignation automatique d'un groupe par défaut aux nouveaux users) n'est en revanche pas encore câblé.
+
+`signals.py` définit aussi `user_logged_in`, un `django.dispatch.Signal` (distinct de `django.contrib.auth.signals.user_logged_in`, car l'auth se fait en JWT et non via `django.contrib.auth.login()`). `views.py::UserViewSet.login` l'envoie (`sender`, `request`, `user`) juste après authentification réussie, avant de construire la réponse — c'est le point d'extension prévu pour que le projet hôte branche des actions personnalisées à la connexion.
 
 ### Points explicitement non automatisés
 

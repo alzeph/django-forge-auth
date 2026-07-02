@@ -12,6 +12,7 @@ Application Django réutilisable fournissant un système d'authentification comp
 - Endpoints de l'API
 - Exemples d'utilisation
 - Modèle `User` : méthodes et propriétés utiles
+- Signal `user_logged_in`
 - Avertissement sur les migrations
 - Points non automatisés (à implémenter côté projet hôte)
 - Notes de sécurité
@@ -305,6 +306,23 @@ curl -X POST http://localhost:8000/api/forge_auth/users/verify-email/ \
 - `User.get(username)` : recherche sur `USERNAME_FIELD` et `ALTERNATIVE_USERNAME_FIELDS`, lève `User.DoesNotExist` ou `PermissionError` (compte au statut `deleted`, uniquement si `status` est activé).
 - Si `status` est activé : `user.is_verified`, `user.is_unauthorized`, et les méthodes `mark_as_verified()`, `mark_as_unverified()`, `mark_as_suspended()`, `deactivate_user()`, `delete_user()`.
 - Si `otp_secret` est activé et `OTP.USE_OTP` est `True` : `user.otp_token.generate_otp()` / `user.otp_token.verify_otp(code)`.
+
+## Signal `user_logged_in`
+
+`forge_auth.signals.user_logged_in` est un `django.dispatch.Signal` envoyé par `UserViewSet.login` juste après une authentification réussie (mot de passe ou OTP selon la config), avant que la réponse (JSON et/ou cookies JWT) ne soit renvoyée au client. Il permet au projet hôte de brancher des actions personnalisées (audit, notifications, mise à jour de métadonnées, etc.) sans avoir à surcharger la vue.
+
+Arguments envoyés : `sender` (la classe `UserViewSet`), `request`, `user`.
+
+```python
+from django.dispatch import receiver
+from forge_auth.signals import user_logged_in
+
+@receiver(user_logged_in)
+def on_forge_auth_login(sender, request, user, **kwargs):
+    ...
+```
+
+Ce signal est spécifique à `forge_auth` (et distinct de `django.contrib.auth.signals.user_logged_in`) car l'authentification se fait via JWT et non via `django.contrib.auth.login()` / la session Django.
 
 ## Avertissement sur les migrations
 

@@ -18,6 +18,7 @@ from forge_auth.serializers import (
 )
 from forge_auth.models import Group, OtpToken
 from forge_auth.conf import forge_auth_config
+from forge_auth.signals import user_logged_in
 
 User = get_user_model()
 
@@ -146,7 +147,9 @@ class UserViewSet(viewsets.ModelViewSet):
         refresh = str(token)
         user.last_login = timezone.now()
         user.save(update_fields=['last_login'])
-        
+
+        user_logged_in.send(sender=self.__class__, request=request, user=user)
+
         response = Response(status=status.HTTP_200_OK)
         if forge_auth_config.jwt_conf.VIA_JSON:
             response.data = {"access": access, "refresh": refresh, "user": UserSerializer(user).data}

@@ -1,4 +1,4 @@
-from django.dispatch import receiver
+from django.dispatch import Signal, receiver
 from django.db.models.signals import post_migrate
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -9,6 +9,27 @@ logger = logging.getLogger(__name__)
 
 
 User = get_user_model()
+
+user_logged_in = Signal()
+"""
+Envoyé par ``UserViewSet.login`` juste après une authentification réussie
+(mot de passe ou OTP selon la config), avant que la réponse ne soit
+renvoyée au client. Permet au projet hôte de brancher des actions
+personnalisées (audit, notifications, mise à jour de métadonnées, etc.)
+sans surcharger la vue.
+
+Arguments envoyés : ``sender`` (la classe ``UserViewSet``), ``request``,
+``user``.
+
+Utilisation côté projet hôte :
+
+    from django.dispatch import receiver
+    from forge_auth.signals import user_logged_in
+
+    @receiver(user_logged_in)
+    def on_forge_auth_login(sender, request, user, **kwargs):
+        ...
+"""
 
 
 @receiver(post_migrate)
