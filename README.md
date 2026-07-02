@@ -366,8 +366,20 @@ automatisatino realiser pour ces ancien issue
 ## Lancer les tests
 
 ```bash
-uv sync
-uv run pytest
+uv sync --extra dev
+uv run python -m pytest
 ```
 
-La configuration de test se trouve dans `tests/settings.py` et `tests/urls.py`. Le fichier `tests/tests.py` dépend du package externe `forge_test` (`ForgeCase`, `ConfigForgeCase`), non inclus dans cette distribution : ajoutez-le comme dépendance de développement dans `pyproject.toml` pour que cette suite s'exécute.
+(`python -m pytest` plutôt que `pytest` directement : garantit que le répertoire courant est sur `sys.path`, nécessaire pour que `tests.settings` s'importe.)
+
+La configuration de test se trouve dans `tests/settings.py` et `tests/urls.py`. Organisation des tests, pour s'y retrouver :
+
+| Fichier | Couvre |
+|---|---|
+| `tests/tests.py` | Endpoints DRF de bout en bout (déclaratif, via le package externe `django-forge-test` — `ForgeCase`/`ConfigForgeCase`, dépendance `dev`) : CRUD `users`/`groups`, login, logout, refresh, verify-email/phone, session-check. |
+| `tests/test_conf.py` | Validation de `ForgeAuthConfig` (`conf.py`) : clés inconnues, types invalides, valeurs par défaut. |
+| `tests/test_models.py` | `User`, `UserManager`, `StatusMixin`, `OtpToken`. |
+| `tests/test_backends.py` | `MultiFieldBackend` (auth Django classique multi-champs). |
+| `tests/test_authentication.py` | `JWTAuthenticationFlexible` (JWT via cookie et/ou header). |
+| `tests/test_signals.py` | Signaux `user_logged_in`, `otp_requested`, et les receivers `post_migrate` (`create_superuser`, `initialize_groups`). |
+| `tests/_helpers.py` | Utilitaires partagés (non collecté par pytest) : voir les docstrings pour les pièges de configuration en cours de test (`forge_auth_config.otp_conf`/`jwt_conf` figés au démarrage, non rafraîchis par `reset()`). |

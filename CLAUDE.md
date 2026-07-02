@@ -11,12 +11,16 @@ Le `README.md` est la référence exhaustive de toutes les options `FORGE_AUTH`,
 ## Commandes
 
 ```bash
-uv sync                # installe les dépendances (dont les extras dev)
-uv run pytest          # lance la suite de tests (settings = tests.settings)
-uv run pytest tests/tests.py::UserTestCase::test_login_success   # un seul test
+uv sync --extra dev                     # installe les dépendances (dont les extras dev)
+uv run python -m pytest                 # lance la suite de tests (settings = tests.settings)
+uv run python -m pytest tests/tests.py::UserTestCase::test_login_success   # un seul test
 ```
 
-La suite de tests dépend du paquet externe `django-forge-test` (`forge_test.public.helpers.ForgeCase`, `ConfigForgeCase`), déclaré en dépendance `dev` dans `pyproject.toml`. Sans lui, `tests/tests.py` ne peut pas s'importer.
+`python -m pytest` plutôt que `pytest` seul : ce dernier n'ajoute pas toujours le répertoire courant à `sys.path`, ce qui fait échouer l'import de `tests.settings`.
+
+La suite de tests dépend du paquet externe `django-forge-test` (`forge_test.public.helpers.ForgeCase`, `forge_test.public.type.ConfigForgeCase`), déclaré en dépendance `dev` dans `pyproject.toml` (`>=0.8.0` — les versions antérieures ont un import circulaire interne). Sans lui, `tests/tests.py` ne peut pas s'importer.
+
+Organisation des tests (`tests/`) : `tests.py` couvre les endpoints DRF de bout en bout via le DSL déclaratif `ForgeCase`/`ConfigForgeCase` ; `test_conf.py`, `test_models.py`, `test_backends.py`, `test_authentication.py`, `test_signals.py` sont des tests unitaires classiques (`django.test.TestCase`) par module. `tests/_helpers.py` (non collecté par pytest) fournit des context managers pour contourner un piège de configuration en cours de test : voir "Configuration centralisée" ci-dessous.
 
 Pas de linter/formatter configuré dans ce dépôt.
 
@@ -28,7 +32,8 @@ Tout le comportement de l'app est piloté par le dict `settings.FORGE_AUTH` du p
 
 - `ForgeAuthConfig.validate()` est appelée dans `ForgeAuthConfig.ready()` (`apps.py`) au démarrage de Django. Une config invalide (clé inconnue, type incorrect, valeur hors énum) lève `ImproperlyConfigured` et arrête le serveur — voir la liste des erreurs possibles dans `conf.py`.
 - `forge_auth_config.get(key)` peut être appelé avant `ready()` (ex. au moment de la définition de classes dans `models.py`/`admin.py`, qui s'exécute à l'import) : dans ce cas le cache `_resolved` se remplit paresseusement avec `_merge_conf()`, sans validation stricte.
-- `reset()` vide le cache — utile dans les tests qui font `@override_settings(FORGE_AUTH=...)`.
+- `reset()` vide le cache `_resolved` — utile dans les tests qui font `@override_settings(FORGE_AUTH=...)`. **Piège** : `reset()` ne rafraîchit PAS les attributs `otp_conf`, `jwt_conf`, `optional_fields`, `username_field`, `credentials_superuser_conf`, `register_include_in_otp`, `group_default`, `groups`, matérialisés une seule fois dans `__init__`. Le code applicatif qui les lit comme attributs (`forge_auth_config.otp_conf.USE_OTP` dans `views.py`, `forge_auth_config.optional_fields` dans `models.py`/`serializers.py`...) reste donc figé à la config de démarrage même après `override_settings` + `reset()` ; seuls les appels `forge_auth_config.get(key)` explicites (utilisés par ex. dans `signals.py` pour `GROUPS`/`CREDENTIALS_SUPERUSER`) sont réellement dynamiques. Voir `tests/_helpers.py` (`temporarily_disable_otp`, `forge_auth_override`) pour la façon de tester ces deux cas correctement.
+- **Bug connu** : `CREDENTIALS_SUPERUSER`/`OTP`/`JWT` sont convertis en objets (`CredentialSuperuserConf`/`OTPConf`/`JWTConf`) dès la construction de `ForgeAuthConfig` (dans `__init__`, avant tout appel à `validate()`). Un type invalide sur l'une de ces clés fait donc planter avec un `TypeError` brut au démarrage de Django plutôt que le message `ImproperlyConfigured` propre que `validate()` est censé produire — voir `tests/test_conf.py::ConstructionCrashesOnNonDictNestedConfigTestCase`.
 
 ### Le modèle `User` est construit dynamiquement à l'import
 
