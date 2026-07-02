@@ -49,11 +49,13 @@ La logique métier de connexion (mot de passe vs OTP selon config, génération 
 
 Deux receivers sur `post_migrate` : création d'un superutilisateur par défaut (`CREDENTIALS_SUPERUSER`, seulement s'il n'en existe aucun) et création des groupes listés dans `GROUPS`. `GROUP_DEFAULT` (assignation automatique d'un groupe par défaut aux nouveaux users) n'est en revanche pas encore câblé.
 
-`signals.py` définit aussi `user_logged_in`, un `django.dispatch.Signal` (distinct de `django.contrib.auth.signals.user_logged_in`, car l'auth se fait en JWT et non via `django.contrib.auth.login()`). `views.py::UserViewSet.login` l'envoie (`sender`, `request`, `user`) juste après authentification réussie, avant de construire la réponse — c'est le point d'extension prévu pour que le projet hôte branche des actions personnalisées à la connexion.
+`signals.py` définit aussi deux `django.dispatch.Signal` :
+- `user_logged_in` (distinct de `django.contrib.auth.signals.user_logged_in`, car l'auth se fait en JWT et non via `django.contrib.auth.login()`) : envoyé par `views.py::UserViewSet.login` (`sender`, `request`, `user`) juste après authentification réussie, avant de construire la réponse.
+- `otp_requested` : envoyé par `views.py::UserViewSet.obtain_otp` (`sender`, `request`, `user`, `otp_token`) juste après génération d'un code OTP — c'est le point d'extension attendu pour brancher l'envoi effectif (SMS/WhatsApp/email), voir "Points explicitement non automatisés" ci-dessous.
 
 ### Points explicitement non automatisés
 
-Documentés dans le README ("Points non automatisés") : l'envoi effectif du code OTP (`OTP.OTP_CANAL` n'est qu'une métadonnée lisible via `forge_auth_config.otp_conf.OTP_CANAL`) et l'expiration du code (`OTP.OTP_LIFETIME` n'est jamais vérifiée dans `OtpToken.verify_otp()`). Ne pas supposer que ces comportements existent déjà côté lib.
+Documentés dans le README ("Points non automatisés") : l'envoi effectif du code OTP (`OTP.OTP_CANAL` n'est qu'une métadonnée lisible via `forge_auth_config.otp_conf.OTP_CANAL` — le signal `otp_requested` est le point d'extension prévu pour le brancher, mais rien n'envoie le code par défaut) et l'expiration du code (`OTP.OTP_LIFETIME` n'est jamais vérifiée dans `OtpToken.verify_otp()`). Ne pas supposer que ces comportements existent déjà côté lib.
 
 ### Point de vigilance sécurité déjà connu
 

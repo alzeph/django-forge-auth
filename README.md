@@ -13,6 +13,7 @@ Application Django réutilisable fournissant un système d'authentification comp
 - Exemples d'utilisation
 - Modèle `User` : méthodes et propriétés utiles
 - Signal `user_logged_in`
+- Signal `otp_requested`
 - Avertissement sur les migrations
 - Points non automatisés (à implémenter côté projet hôte)
 - Notes de sécurité
@@ -324,6 +325,21 @@ def on_forge_auth_login(sender, request, user, **kwargs):
 
 Ce signal est spécifique à `forge_auth` (et distinct de `django.contrib.auth.signals.user_logged_in`) car l'authentification se fait via JWT et non via `django.contrib.auth.login()` / la session Django.
 
+## Signal `otp_requested`
+
+`forge_auth.signals.otp_requested` est envoyé par `UserViewSet.obtain_otp` juste après la génération d'un nouveau code OTP, avant que la réponse ne soit renvoyée au client. C'est le point d'extension prévu pour l'envoi effectif du code (SMS, WhatsApp, email...) — voir "Points non automatisés" ci-dessous.
+
+Arguments envoyés : `sender` (la classe `UserViewSet`), `request`, `user`, `otp_token` (le code en clair est disponible via `otp_token.otp_code`).
+
+```python
+from django.dispatch import receiver
+from forge_auth.signals import otp_requested
+
+@receiver(otp_requested)
+def on_forge_auth_otp_requested(sender, request, user, otp_token, **kwargs):
+    send_sms(user.phone_number, otp_token.otp_code)
+```
+
 ## Avertissement sur les migrations
 
 Les migrations fournies (`0001_initial`, `0002_user_otp_secret_user_status`, `0003_otptoken`) ont été générées pour la configuration par défaut, c'est-à-dire `OPTIONAL_FIELDS = []` (les deux champs `status` et `otp_secret`, ainsi que le modèle `OtpToken`, existent en base).
@@ -334,7 +350,7 @@ Les migrations fournies (`0001_initial`, `0002_user_otp_secret_user_status`, `00
 
 Ces options de `FORGE_AUTH` sont validées au démarrage mais ne déclenchent aucune action automatique dans le code fourni :
 
-- `OTP.OTP_CANAL` : `obtain-otp` génère et stocke le code (`otp_token.otp_code`), mais ne l'envoie nulle part. L'envoi effectif (SMS, WhatsApp, email) est à la charge du projet hôte, par exemple via un signal `post_save` sur `OtpToken` ou en surchargeant l'action `obtain_otp`.
+- `OTP.OTP_CANAL` : `obtain-otp` génère et stocke le code (`otp_token.otp_code`), mais ne l'envoie nulle part. L'envoi effectif (SMS, WhatsApp, email) est à la charge du projet hôte, via le signal `otp_requested` (voir plus haut) ou en surchargeant l'action `obtain_otp`.
 - `OTP.OTP_LIFETIME` : aucune expiration n'est vérifiée dans `verify_otp()`. À implémenter si nécessaire (comparaison avec `otp_token.updated_at`).
 
 automatisatino realiser pour ces ancien issue

@@ -31,6 +31,29 @@ Utilisation côté projet hôte :
         ...
 """
 
+otp_requested = Signal()
+"""
+Envoyé par ``UserViewSet.obtain_otp`` juste après la génération d'un
+nouveau code OTP, avant que la réponse ne soit renvoyée au client.
+C'est le point d'extension prévu pour l'envoi effectif du code (SMS,
+WhatsApp, email...) — voir la section "Points non automatisés" du
+README : ``OTP.OTP_CANAL`` n'est qu'une métadonnée de configuration,
+l'envoi réel est à la charge du projet hôte.
+
+Arguments envoyés : ``sender`` (la classe ``UserViewSet``), ``request``,
+``user``, ``otp_token`` (le code en clair est disponible via
+``otp_token.otp_code``).
+
+Utilisation côté projet hôte :
+
+    from django.dispatch import receiver
+    from forge_auth.signals import otp_requested
+
+    @receiver(otp_requested)
+    def on_forge_auth_otp_requested(sender, request, user, otp_token, **kwargs):
+        send_sms(user.phone_number, otp_token.otp_code)
+"""
+
 
 @receiver(post_migrate)
 def create_superuser(sender, **kwargs):

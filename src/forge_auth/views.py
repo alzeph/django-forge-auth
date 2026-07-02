@@ -18,7 +18,7 @@ from forge_auth.serializers import (
 )
 from forge_auth.models import Group, OtpToken
 from forge_auth.conf import forge_auth_config
-from forge_auth.signals import user_logged_in
+from forge_auth.signals import user_logged_in, otp_requested
 
 User = get_user_model()
 
@@ -250,5 +250,6 @@ class UserViewSet(viewsets.ModelViewSet):
                 return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
             otp_token, _ = OtpToken.objects.get_or_create(user=user)
             otp_token.generate_otp()
-            return Response(UserSerializer(user).data) 
+            otp_requested.send(sender=self.__class__, request=request, user=user, otp_token=otp_token)
+            return Response(UserSerializer(user).data)
         return Response({"detail": "OTP désactivé pour cette configuration"}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
