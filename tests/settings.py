@@ -4,9 +4,15 @@ DEBUG = True
 INSTALLED_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",
+    "django.contrib.sessions",
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "forge_auth",
+]
+
+MIDDLEWARE = [
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
 ]
 
 DATABASES = {
@@ -25,6 +31,8 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "forge_auth.authentification.JWTAuthenticationFlexible",
     ],
+    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "PAGE_SIZE": 20,
 }
 
 AUTHENTICATION_BACKENDS = [

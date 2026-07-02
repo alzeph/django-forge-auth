@@ -74,7 +74,7 @@ wheels = [
 
 [[package]]
 name = "django-forge-auth"
-version = "0.1.0"
+version = "0.1.32"
 source = { editable = "." }
 dependencies = [
     { name = "django", version = "5.2.15", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -95,7 +95,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "django", specifier = ">=5.0,<6.1" },
-    { name = "django-forge-test", marker = "extra == 'dev'", specifier = ">=0.4.0" },
+    { name = "django-forge-test", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "djangorestframework", specifier = ">=3.17.1" },
     { name = "djangorestframework-simplejwt", specifier = ">=5.5.1" },
     { name = "drf-spectacular", specifier = ">=0.27" },
@@ -107,7 +107,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "django-forge-test"
-version = "0.4.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django", version = "5.2.15", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -115,9 +115,9 @@ dependencies = [
     { name = "faker" },
     { name = "pillow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fe/76/3e9869150a55ddb2a230f4e8e97abde79e05616e7f7252ba3b490211b20d/django_forge_test-0.4.0.tar.gz", hash = "sha256:6af2109c5dec8a2d865705e28c3757e1ae95c3149042ad4c7d768fafc1d153c0", size = 64205, upload-time = "2026-06-18T09:28:09.712Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/6e/140b36dbed51a20c9a75043ea4dc63407fc4525d327201dccf800938a1a2/django_forge_test-0.8.0.tar.gz", hash = "sha256:e9bd1cfdd4021d9415c971eb60abcd813e74aa37854d17f0cd054658972de651", size = 89413, upload-time = "2026-06-19T11:09:15.827Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/89/17/e544fcb19fdc0b1ed61498e13debb7e7029e12341f720972998499b4bd6c/django_forge_test-0.4.0-py3-none-any.whl", hash = "sha256:827fe723f33aee80fc042a2b9d0567d3020c0f61acf7e33aec695f14447c3840", size = 33811, upload-time = "2026-06-18T09:28:07.987Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/3c/4500a7ec5cdfbc6618ff77dd87c8c70e2ae134f0352e72e2778fbd23333e/django_forge_test-0.8.0-py3-none-any.whl", hash = "sha256:3f8fc725374976a8108343aa01b637c24a2761e826ffd4ee71288a0a18d66486", size = 37086, upload-time = "2026-06-19T11:09:13.932Z" },
 ]
 
 [[package]]

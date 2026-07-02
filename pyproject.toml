@@ -36,7 +36,7 @@ Issues = "https://github.com/alzeph/django-forge-auth/issues"
 dev = [
     "pytest>=8.0",
     "pytest-django>=4.8",
-    "django-forge-test>=0.4.0",
+    "django-forge-test>=0.8.0",
 ]
 
 [build-system]

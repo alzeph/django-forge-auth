@@ -1,10 +1,25 @@
 from rest_framework.utils.serializer_helpers import ReturnDict, ReturnList
-from forge_test.public.helpers import ForgeCase, ConfigForgeCase
+from rest_framework_simplejwt.tokens import RefreshToken
+from forge_test.public.helpers import ForgeCase
+from forge_test.public.type import ConfigForgeCase
 from forge_auth.models import Group
 from django.contrib.auth import get_user_model
+from django.test import Client
 from django.urls import reverse
 
 User = get_user_model()
+
+
+def _jwt_authenticated_client(user) -> Client:
+    """
+    forge_auth authentifie uniquement via JWT (JWTAuthenticationFlexible) :
+    le force_login (session Django) par défaut de ForgeCase n'est pas reconnu
+    par l'API. On fournit donc un client avec le header Authorization.
+    """
+    client = Client()
+    token = RefreshToken.for_user(user)
+    client.defaults["HTTP_AUTHORIZATION"] = f"Bearer {token.access_token}"
+    return client
 
 
 class GroupTestCase(ForgeCase):
@@ -55,6 +70,7 @@ class UserTestCase(ForgeCase):
             'max_depth': 7,
             'create_m2m': True
         },
+        'auth_backend': _jwt_authenticated_client,
         'tests': [
             {
                 'test_name': 'users_list',

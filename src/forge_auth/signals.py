@@ -17,8 +17,8 @@ def create_superuser(sender, **kwargs):
     credentials = forge_auth_config.get("CREDENTIALS_SUPERUSER")
     if not User.objects.filter(is_superuser=True).exists():
         data = {
-            username_field: credentials["username"],
-            "password": credentials["password"],
+            username_field: credentials.username,
+            "password": credentials.password,
             "last_name":"Admin",
             "first_name":"Auth default",
         }
