@@ -60,12 +60,24 @@ def create_superuser(sender, **kwargs):
     username_field = forge_auth_config.get_username_field()
     credentials = forge_auth_config.get("CREDENTIALS_SUPERUSER")
     if not User.objects.filter(is_superuser=True).exists():
-        data = {
-            username_field: credentials.username,
-            "password": credentials.password,
-            "last_name":"Admin",
-            "first_name":"Auth default",
-        }
+        try:
+            data = {
+                username_field: credentials.get('username'),
+                "password": credentials.get('password'),
+                "last_name":"Admin",
+                "first_name":"Auth default",
+            }
+        except AttributeError:
+            logger.error("CREDENTIALS_SUPERUSER non configuré correctement")
+            data = {
+                username_field: credentials.username,
+                "password": credentials.password,
+                "last_name":"Admin",
+                "first_name":"Auth default",
+            }
+        except Exception as e:
+            logger.error(f"Erreur lors de la récupération des credentials superuser : {e}")
+            return
         try:
             user = User.objects.create_superuser(**data)
             logger.info(f"Super utilisateur créé avec success : {user}") 
