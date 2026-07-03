@@ -92,5 +92,5 @@ def initialize_groups(sender, **kwargs):
         if created:
             group_create.append(group_name)
     if group_create:
-        logger.info(f"Groupes crées avec success : ", group_create)
+        logger.info(f"Groupes crées avec success : {group_create}")
 
