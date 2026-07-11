@@ -12,7 +12,8 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.conf import settings
 from forge_auth.serializers import (
-    ExistsResponseSerializer, VerifyFieldSerializer,
+    ExistsResponseSerializer, LoginSerializerF2FA_STEP1, LoginSerializerF2FA_STEP2,
+    VerifyFieldSerializer,
     ValidationError400Serializer,
     LoginSerializer, GroupSerializer, UserSerializer,
     UserSerializer, LoginSuccessSerializer,
@@ -47,7 +48,7 @@ class UserViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'post', 'patch', 'put', 'delete']
 
     def get_permissions(self):
-        public_actions = ['create', 'obtain_otp', 'verify_email', 'verify_phone', 'login']
+        public_actions = ['create', 'obtain_otp', 'verify_email', 'verify_phone', 'login', 'authenticate_user', 'verify_otp_and_login']
         if self.action in public_actions:
             permission_classes = [permissions.AllowAny]
         else:
@@ -286,3 +287,76 @@ class UserViewSet(viewsets.ModelViewSet):
             return Response(UserSerializer(user).data)
         logger.debug("obtain_otp: OTP désactivé pour cette configuration")
         return Response({"detail": "OTP désactivé pour cette configuration"}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    # webflow double authentification
+    @extend_schema(
+        operation_id="authenticate-user",
+        summary="Authentification de l'utilisateur",
+        description="Authentification de l'utilisateur avec avec son mot de passe",
+        request=LoginSerializerF2FA_STEP1,
+        responses={200: UserSerializer, 400: ValidationError400Serializer}
+    )
+    @action(detail=False, methods=['post'], url_name='authenticate-user', url_path=r'authenticate-user', permission_classes=[permissions.AllowAny])
+    def authenticate_user(self, request, *args, **kwargs):
+        logger.debug("authenticate_user: tentative pour username=%s", request.data.get('username'))
+        serializer = LoginSerializerF2FA_STEP1(data=request.data)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception:
+            logger.warning("authenticate_user: échec d'authentification pour username=%s", request.data.get('username'))
+            raise
+        user = serializer.validated_data['user']
+        logger.info("authenticate_user: authentification réussie pour user=%s", user)
+        return Response(UserSerializer(user).data, status=status.HTTP_200_OK)
+    
+    @extend_schema(
+        operation_id="verify-otp-and-login",
+        summary="Vérification du code OTP et connexion",
+        description="Vérification du code OTP et connexion de l'utilisateur",
+        request=LoginSerializerF2FA_STEP2,
+        responses={200: UserSerializer, 400: ValidationError400Serializer}
+    )
+    @action(detail=False, methods=['post'], url_name='verify-otp-and-login', url_path=r'verify-otp-and-login', permission_classes=[permissions.AllowAny])
+    def verify_otp_and_login(self, request, *args, **kwargs):
+        logger.debug("verify_otp_and_login: tentative pour username=%s", request.data.get('username'))
+        serializer = LoginSerializerF2FA_STEP2(data=request.data)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception:
+            logger.warning("verify_otp_and_login: échec de vérification pour username=%s", request.data.get('username'))
+            raise
+        user = serializer.validated_data['user']
+        token = RefreshToken.for_user(user)
+        access = str(token.access_token)
+        refresh = str(token)
+        user.last_login = timezone.now()
+        user.save(update_fields=['last_login'])
+
+        logger.info("verify_otp_and_login: authentification réussie pour user=%s", user)
+        user_logged_in.send(sender=self.__class__, request=request, user=user)
+
+        response = Response(status=status.HTTP_200_OK)
+        if forge_auth_config.jwt_conf.VIA_JSON:
+            response.data = {"access": access, "refresh": refresh, "user": UserSerializer(user).data}
+        if forge_auth_config.jwt_conf.VIA_HTTP_ONLY:
+            response.set_cookie(
+                key="access",
+                value=access,
+                httponly=True,
+                secure=not settings.DEBUG,
+                samesite=settings.DEBUG and "Lax" or None,
+                path="/",
+            )
+
+            response.set_cookie(
+                key="refresh",
+                value=refresh,
+                httponly=True,
+                secure=not settings.DEBUG,
+                samesite=settings.DEBUG and "Lax" or None,
+                path="/",
+            )
+        return response
+    
+
+

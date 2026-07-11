@@ -120,6 +120,80 @@ class LoginSerializer(serializers.Serializer):
         attrs['user'] = user
         return attrs
 
+class LoginSerializerF2FA_STEP1(serializers.Serializer):
+    username = serializers.CharField()
+    password = serializers.CharField(required=True)
+    
+    def validate(self, attrs):
+        
+        """
+        permet de verifier l'authentification
+        """
+        
+        attrs = super().validate(attrs)
+        username = attrs.get('username')
+        password = attrs.get('password')
+
+        logger.debug("LoginSerializerF2FA_STEP1.validate: tentative pour username=%s", username)
+
+        try:
+            user = User.get(username)
+        except (User.DoesNotExist, PermissionError):
+            logger.warning("LoginSerializerF2FA_STEP1.validate: utilisateur introuvable ou inaccessible (%s)", username)
+            raise exceptions.AuthenticationFailed("Identifiants incorrects")
+        if not password:
+                logger.warning("LoginSerializer.validate: mot de passe manquant pour %s", username)
+                raise exceptions.AuthenticationFailed("Mot de passe obligatoire")
+        if not user.check_password(password):
+                logger.warning("LoginSerializer.validate: mot de passe incorrect pour %s", username)
+                raise exceptions.AuthenticationFailed("Mot de passe incorrect")
+        logger.debug("LoginSerializer.validate: authentification réussie pour %s", username)
+        attrs['user'] = user
+        return attrs
+
+class LoginSerializerF2FA_STEP2(serializers.Serializer):
+    username = serializers.CharField()
+    code = serializers.CharField(required=True)
+    
+    def validate(self, attrs):
+        
+        """
+        permet de verifier l'authentification
+        """
+        
+        attrs = super().validate(attrs)
+        
+        username = attrs.get('username')
+        code = attrs.get('code')
+
+        logger.debug("LoginSerializerF2FA_STEP2.validate: tentative pour username=%s", username)
+
+        try:
+            user = User.get(username)
+        except (User.DoesNotExist, PermissionError):
+            logger.warning("LoginSerializerF2FA_STEP2.validate: utilisateur introuvable ou inaccessible (%s)", username)
+            raise exceptions.AuthenticationFailed("Identifiants incorrects")
+
+        if 'otp_secret' in forge_auth_config.optional_fields or not forge_auth_config.otp_conf.USE_OTP:
+            logger.warning("LoginSerializerF2FA_STEP2.validate: OTP désactivé pour cette configuration, connexion refusée pour %s", username)
+            raise exceptions.AuthenticationFailed("OTP désactivé pour cette configuration")
+
+        if not code:
+            logger.warning("LoginSerializerF2FA_STEP2.validate: code OTP manquant pour %s", username)
+            raise exceptions.AuthenticationFailed("Code OTP obligatoire")
+        try:
+            otp_token = user.otp_token
+        except OtpToken.DoesNotExist:
+            logger.warning("LoginSerializerF2FA_STEP2.validate: aucun OTP demandé pour %s", username)
+            raise exceptions.AuthenticationFailed("Aucun code OTP n'a été demandé")
+        if not otp_token.verify_otp(code):
+            logger.warning("LoginSerializerF2FA_STEP2.validate: code OTP incorrect pour %s", username)
+            raise exceptions.AuthenticationFailed("Code incorrect")
+
+        attrs['user'] = user
+        return attrs
+
+
 class LoginSuccessSerializer(serializers.Serializer):
     user = UserSerializer()
     access = serializers.CharField()

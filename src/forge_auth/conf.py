@@ -45,6 +45,7 @@ USERNAME_FIELD_TYPE = Literal["phone_number", "email"]
 
 class ForgeAuthConfigType(TypedDict, total=False):
     OPTIONAL_FIELDS: List[OPTIONAL_FIELD_TYPE]
+    F2FA: bool
     CREDENTIALS_SUPERUSER: CredentialSuperuserConf
     USERNAME_FIELD: USERNAME_FIELD_TYPE
     ALTERNATIVE_USERNAME_FIELDS: List[str]
@@ -56,6 +57,7 @@ class ForgeAuthConfigType(TypedDict, total=False):
 
 ForgeAuthConfigKeys = Literal[
     "OPTIONAL_FIELDS",
+    "F2FA",
     "CREDENTIALS_SUPERUSER",
     "USERNAME_FIELD",
     "ALTERNATIVE_USERNAME_FIELDS",
@@ -81,6 +83,7 @@ class ForgeAuthConfig:
 
     _DEFAULTS: ForgeAuthConfigType = {
         "OPTIONAL_FIELDS": [],
+        "F2FA": False,
         "CREDENTIALS_SUPERUSER": CredentialSuperuserConf(),
         "USERNAME_FIELD": "phone_number",
         'ALTERNATIVE_USERNAME_FIELDS': [],
