@@ -32,6 +32,7 @@ global_fields = [
 class UserSerializer(serializers.ModelSerializer):
     groups_detail = GroupSerializer(source='groups', many=True, read_only=True)
     user_permissions = PermissionSerializer(many=True, read_only=True)
+    groups = serializers.ListField(required=False, child=serializers.CharField(), write_only=True)
     class Meta:
         model = User
         fields = global_fields + ['status'] if 'status'  not in forge_auth_config.optional_fields else global_fields
