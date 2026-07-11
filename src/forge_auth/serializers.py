@@ -27,6 +27,7 @@ global_fields = [
     'pk', 'first_name', 'last_name', 'phone_number', 'email',
     'last_login', 'is_staff', 'is_active', 'is_superuser',
     'groups', 'groups_detail', 'user_permissions', 'date_joined',
+    'password',
 ] 
 class UserSerializer(serializers.ModelSerializer):
     groups_detail = GroupSerializer(source='groups', many=True, read_only=True)
@@ -41,6 +42,7 @@ class UserSerializer(serializers.ModelSerializer):
             'is_staff': {'read_only': True},
             'is_active': {'read_only': True},
             'is_superuser': {'read_only': True},
+            'password': {'write_only': True, 'required': False},
             'user_permissions': {'read_only': True},
             'date_joined': {'read_only': True},
             'first_name': {'required': False},
