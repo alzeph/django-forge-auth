@@ -1,3 +1,5 @@
+import logging
+
 import pyotp
 
 from django.conf import settings
@@ -16,6 +18,8 @@ from django.utils.translation import gettext_lazy as _
 
 from forge_auth.conf import forge_auth_config
 
+logger = logging.getLogger(__name__)
+
 
 class UserManager(BaseUserManager):
     """Manager personnalisé : authentification par numéro de téléphone."""
@@ -23,8 +27,9 @@ class UserManager(BaseUserManager):
     def create_user(self, password=None, **extra_fields):
         username_field = forge_auth_config.get_username_field()
         username = extra_fields.get(username_field, None)
-        
+
         if not username:
+            logger.error("create_user: %s manquant, création annulée", username_field)
             raise ValueError(_(f"Le {username_field} est obligatoire."))
         groups = extra_fields.pop("groups", None)
         permissions = extra_fields.pop("user_permissions", None)
@@ -37,15 +42,18 @@ class UserManager(BaseUserManager):
         if permissions:
             user.user_permissions.set(permissions)
 
+        logger.info("create_user: utilisateur créé (%s=%s)", username_field, username)
         return user
 
     def create_superuser(self, password=None, **extra_fields):
         username_field = forge_auth_config.get_username_field()
         username = extra_fields.get(username_field, None)
         if not username:
+            logger.error("create_superuser: %s manquant, création annulée", username_field)
             raise ValueError(_(f"Le {username_field} est obligatoire."))
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
+        logger.debug("create_superuser: création d'un superutilisateur (%s=%s)", username_field, username)
         return self.create_user(password, **extra_fields)
 
 
@@ -263,10 +271,12 @@ class User(*_build_user_bases()):
         try:
             user = User.objects.get(query)
         except User.DoesNotExist:
+            logger.debug("User.get: aucun utilisateur trouvé pour %s", username)
             raise User.DoesNotExist(f"Utilisateur introuvable : {username}")
-        
+
         if 'status' not in forge_auth_config.optional_fields:
             if user.status == StatusMixin.StatusVerified.DELETED:
+                logger.warning("User.get: tentative d'accès à un compte supprimé (%s)", username)
                 raise PermissionError("Ce compte a été supprimé.")
         return user
 
@@ -327,6 +337,8 @@ if _use_otp and _otp_enabled:
             self.token = make_password(code)
             self.otp_code = code
             self.save()
+            # Le code n'est volontairement pas loggé (donnée sensible).
+            logger.info("generate_otp: nouveau code OTP (%s chiffres) généré pour user=%s", nb_digits, self.user)
             return code
         
 
@@ -346,7 +358,13 @@ if _use_otp and _otp_enabled:
             bool
                 True si le code est valide (ou si DEBUG=True).
             """
-            return True if getattr(settings, "DEBUG", True) else check_password(code, self.token)
+            if getattr(settings, "DEBUG", True):
+                logger.debug("verify_otp: DEBUG=True, vérification bypassée pour user=%s", self.user)
+                return True
+            is_valid = check_password(code, self.token)
+            if not is_valid:
+                logger.warning("verify_otp: code OTP invalide pour user=%s", self.user)
+            return is_valid
 
         class Meta:
             verbose_name        = _("jeton OTP")

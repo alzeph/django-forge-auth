@@ -1,3 +1,5 @@
+import logging
+
 from drf_spectacular.utils import extend_schema, OpenApiResponse
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework import status
@@ -11,7 +13,7 @@ from django.utils import timezone
 from django.conf import settings
 from forge_auth.serializers import (
     ExistsResponseSerializer, VerifyFieldSerializer,
-    ValidationError400Serializer, 
+    ValidationError400Serializer,
     LoginSerializer, GroupSerializer, UserSerializer,
     UserSerializer, LoginSuccessSerializer,
     RefreshSerializer, UsernameSerializer
@@ -19,6 +21,8 @@ from forge_auth.serializers import (
 from forge_auth.models import Group, OtpToken
 from forge_auth.conf import forge_auth_config
 from forge_auth.signals import user_logged_in, otp_requested
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -54,7 +58,9 @@ class UserViewSet(viewsets.ModelViewSet):
         """
         Méthode générique pour vérifier si une valeur existe sur un champ spécifique.
         """
+        logger.debug("_verify_field: field=%s exclude=%s", field_name, bool(exclude_value))
         if not value:
+            logger.warning("_verify_field: valeur manquante pour le champ %s", field_name)
             return Response({"detail": f"{field_name} is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         users_qs = User.objects.all()
@@ -62,6 +68,7 @@ class UserViewSet(viewsets.ModelViewSet):
             users_qs = users_qs.exclude(**{field_name: exclude_value})
 
         exists = users_qs.filter(**{field_name: value}).exists()
+        logger.debug("_verify_field: field=%s exists=%s", field_name, exists)
         return Response({"exists": exists})
     
     @extend_schema(
@@ -82,6 +89,7 @@ class UserViewSet(viewsets.ModelViewSet):
         """
         Vérifie si un email existe, possibilité d'exclure un email.
         """
+        logger.debug("verify_email appelé")
         verify_email = request.data.get('verify')
         exclude_email = request.data.get('exclude')
         return self._verify_field('email', verify_email, exclude_email)
@@ -104,6 +112,7 @@ class UserViewSet(viewsets.ModelViewSet):
         """
         Vérifie si un numéro de téléphone existe, possibilité d'exclure un numéro.
         """
+        logger.debug("verify_phone appelé")
         verify_phone = request.data.get('verify')
         exclude_phone = request.data.get('exclude')
         return self._verify_field('phone_number', verify_phone, exclude_phone)
@@ -123,6 +132,7 @@ class UserViewSet(viewsets.ModelViewSet):
         url_path=r'current'
     )
     def current_user(self, request):
+        logger.debug("current_user appelé par %s", request.user)
         serializer = self.get_serializer(request.user)
         return Response(serializer.data)
     
@@ -139,8 +149,13 @@ class UserViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=['post'], url_name='login', url_path=r'login', permission_classes=[permissions.AllowAny])
     def login(self, request, *args, **kwargs):
+        logger.debug("login: tentative avec username=%s", request.data.get('username'))
         serializer = LoginSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception:
+            logger.warning("login: échec d'authentification pour username=%s", request.data.get('username'))
+            raise
         user = serializer.validated_data['user']
         token = RefreshToken.for_user(user)
         access = str(token.access_token)
@@ -148,6 +163,7 @@ class UserViewSet(viewsets.ModelViewSet):
         user.last_login = timezone.now()
         user.save(update_fields=['last_login'])
 
+        logger.info("login: authentification réussie pour user=%s", user)
         user_logged_in.send(sender=self.__class__, request=request, user=user)
 
         response = Response(status=status.HTTP_200_OK)
@@ -182,13 +198,15 @@ class UserViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=['post'], url_name='logout', url_path=r'logout')
     def logout(self, request, *args, **kwargs):
+        logger.debug("logout appelé par %s", getattr(request, "user", None))
         try:
             refresh = request.COOKIES.get("refresh") or request.data.get("refresh")
             if refresh:
                 token = RefreshToken(refresh)
                 token.blacklist()
-        except Exception:
-            pass
+                logger.info("logout: refresh token blacklisté pour %s", getattr(request, "user", None))
+        except Exception as e:
+            logger.warning("logout: échec du blacklist du refresh token : %s", e)
 
         response = Response(status=status.HTTP_204_NO_CONTENT)
         response.delete_cookie("access")
@@ -205,6 +223,7 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_name='session-check', url_path=r'session-check')
     def session_check(self, request, *args, **kwargs):
         # Si on arrive ici, le user est authentifié
+        logger.debug("session_check: session valide pour %s", request.user)
         return Response(UserSerializer(request.user).data)
     
     @extend_schema(
@@ -217,9 +236,15 @@ class UserViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=['post'], url_name='refresh', url_path=r'refresh')
     def refresh(self, request, *args, **kwargs):
+        logger.debug("refresh: tentative de renouvellement de token")
         refresh = request.COOKIES.get("refresh") or request.data.get("refresh")
         serializer = RefreshSerializer(data={"refresh": refresh})
-        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception:
+            logger.warning("refresh: token de rafraîchissement invalide")
+            raise
+        logger.info("refresh: nouveau token access généré")
         return Response(serializer.validated_data, status=status.HTTP_200_OK)
     
     @extend_schema(
@@ -239,17 +264,25 @@ class UserViewSet(viewsets.ModelViewSet):
     )
     @action(detail=False, methods=['post'], url_name='obtain-otp', url_path=r'obtain-otp', permission_classes=[permissions.AllowAny])
     def obtain_otp(self, request, *args, **kwargs):
+        logger.debug("obtain_otp: demande pour username=%s", request.data.get('username'))
         if "otp_secret" not in forge_auth_config.optional_fields and forge_auth_config.otp_conf.USE_OTP:
             data = UsernameSerializer(data=request.data)
             data.is_valid(raise_exception=True)
             try:
                 user = User.get(data.validated_data["username"])
             except User.DoesNotExist:
+                logger.warning("obtain_otp: utilisateur introuvable pour username=%s", data.validated_data.get("username"))
                 return Response({"detail": "User not found"}, status=status.HTTP_404_NOT_FOUND)
             except PermissionError as exc:
+                logger.warning("obtain_otp: accès refusé pour username=%s : %s", data.validated_data.get("username"), exc)
                 return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
-            otp_token, _ = OtpToken.objects.get_or_create(user=user)
+            otp_token, created = OtpToken.objects.get_or_create(user=user)
             otp_token.generate_otp()
+            logger.info(
+                "obtain_otp: code OTP généré pour user=%s (jeton %s)",
+                user, "créé" if created else "existant",
+            )
             otp_requested.send(sender=self.__class__, request=request, user=user, otp_token=otp_token)
             return Response(UserSerializer(user).data)
+        logger.debug("obtain_otp: OTP désactivé pour cette configuration")
         return Response({"detail": "OTP désactivé pour cette configuration"}, status=status.HTTP_405_METHOD_NOT_ALLOWED)

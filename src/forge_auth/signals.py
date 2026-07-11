@@ -57,6 +57,7 @@ Utilisation côté projet hôte :
 
 @receiver(post_migrate)
 def create_superuser(sender, **kwargs):
+    logger.debug("create_superuser: signal post_migrate reçu (sender=%s)", sender)
     username_field = forge_auth_config.get_username_field()
     credentials = forge_auth_config.get("CREDENTIALS_SUPERUSER")
     if not User.objects.filter(is_superuser=True).exists():
@@ -80,12 +81,15 @@ def create_superuser(sender, **kwargs):
             return
         try:
             user = User.objects.create_superuser(**data)
-            logger.info(f"Super utilisateur créé avec success : {user}") 
+            logger.info(f"Super utilisateur créé avec success : {user}")
         except Exception as e:
             logger.error(f"Super utilisateur par default non créé : {e}")
+    else:
+        logger.debug("create_superuser: un superutilisateur existe déjà, rien à faire")
 
 @receiver(post_migrate)
 def initialize_groups(sender, **kwargs):
+    logger.debug("initialize_groups: signal post_migrate reçu (sender=%s)", sender)
     group_create = []
     for group_name in forge_auth_config.get("GROUPS"):
         _, created = Group.objects.get_or_create(name=group_name)
@@ -93,4 +97,6 @@ def initialize_groups(sender, **kwargs):
             group_create.append(group_name)
     if group_create:
         logger.info(f"Groupes crées avec success : {group_create}")
+    else:
+        logger.debug("initialize_groups: aucun nouveau groupe à créer")
 
