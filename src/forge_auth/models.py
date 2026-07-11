@@ -39,14 +39,14 @@ class UserManager(BaseUserManager):
 
         if groups:
             if isinstance(groups, list):
-                groups = Group.objects.filter(Q(name__in=groups) | Q(id__in=groups))
+                groups = Group.objects.filter(name__in=groups)
                 logger.debug("create_user: ajout de %d groupes à l'utilisateur %s", len(groups), username)
-                user.groups.set(groups)
+                user.groups.set(groups or [])
         if permissions:
             if isinstance(permissions, list):
-                permissions = Permission.objects.filter(Q(codename__in=permissions) | Q(id__in=permissions))
+                permissions = Permission.objects.filter(codename__in=permissions)
                 logger.debug("create_user: ajout de %d permissions à l'utilisateur %s", len(permissions), username)
-                user.user_permissions.set(permissions)
+                user.user_permissions.set(permissions or [])
 
         logger.info("create_user: utilisateur créé (%s=%s)", username_field, username)
         return user
