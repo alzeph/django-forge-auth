@@ -9,6 +9,7 @@ from contextlib import contextmanager
 
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory, TestCase
+from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from forge_auth.authentification import JWTAuthenticationFlexible
@@ -80,3 +81,27 @@ class JWTAuthenticationFlexibleTestCase(TestCase):
             request = self.factory.get("/", HTTP_AUTHORIZATION=f"Bearer {self.access_token}")
             user, token = self.auth.authenticate(request)
         self.assertEqual(user, self.user)
+
+    def test_expired_access_is_silently_renewed_when_refresh_cookie_present(self):
+        refresh_token = RefreshToken.for_user(self.user)
+        with jwt_modes(via_json=False, via_http_only=True):
+            request = self.factory.get("/")
+            request.COOKIES["access"] = "token.invalide.expire"
+            request.COOKIES["refresh"] = str(refresh_token)
+            user, token = self.auth.authenticate(request)
+        self.assertEqual(user, self.user)
+
+    def test_invalid_access_without_refresh_raises(self):
+        with jwt_modes(via_json=False, via_http_only=True):
+            request = self.factory.get("/")
+            request.COOKIES["access"] = "token.invalide.expire"
+            with self.assertRaises(InvalidToken):
+                self.auth.authenticate(request)
+
+    def test_invalid_access_with_invalid_refresh_raises_original_error(self):
+        with jwt_modes(via_json=False, via_http_only=True):
+            request = self.factory.get("/")
+            request.COOKIES["access"] = "token.invalide.expire"
+            request.COOKIES["refresh"] = "refresh.invalide.aussi"
+            with self.assertRaises(InvalidToken):
+                self.auth.authenticate(request)
