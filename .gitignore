@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Notes Claude Code (local, pas suivi par git)
+CLAUDE.md
