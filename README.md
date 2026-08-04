@@ -7,6 +7,7 @@ Application Django réutilisable fournissant un système d'authentification comp
 - Fonctionnalités
 - Installation
 - Configuration rapide
+- Assistant de configuration interactif (`forge_auth_setup`)
 - Référence complète des options `FORGE_AUTH`
 - Scénarios de configuration détaillés
 - Endpoints de l'API
@@ -46,6 +47,7 @@ Application Django réutilisable fournissant un système d'authentification comp
 - Limitation de débit (throttling) configurable sur les endpoints sensibles (login, OTP, refresh, reset de mot de passe, vérification d'existence).
 - Documentation OpenAPI via `drf-spectacular` (`extend_schema` déjà posé sur chaque action).
 - Validation de configuration au démarrage (`AppConfig.ready()`), qui stoppe le serveur si `FORGE_AUTH` est mal formé.
+- Assistant interactif (`python manage.py forge_auth_setup`) pour générer `FORGE_AUTH` sans avoir à connaître toutes les options à l'avance.
 
 ## Installation
 
@@ -153,6 +155,52 @@ Puis :
 ```bash
 python manage.py migrate
 ```
+
+## Assistant de configuration interactif (`forge_auth_setup`)
+
+Pour configurer `FORGE_AUTH` sans avoir à connaître toutes les options à l'avance (voir la référence complète ci-dessous), une commande de gestion interactive est fournie — disponible dès que `forge_auth` est dans `INSTALLED_APPS` :
+
+```bash
+uv run manage.py forge_auth_setup
+# ou, sans uv :
+python manage.py forge_auth_setup
+```
+
+Déroulement :
+
+1. Choix de l'identifiant de connexion (`USERNAME_FIELD`/`ALTERNATIVE_USERNAME_FIELDS`) et des champs du modèle `User` à activer/désactiver (`OPTIONAL_FIELDS`) — présentés comme une liste à cocher (case `[x]`/`[ ]`) : tapez les numéros à basculer, Entrée pour valider la sélection affichée.
+2. Choix des fonctionnalités à configurer maintenant (OTP, JWT, verrouillage de compte, MFA TOTP, magic link, connexion sociale, groupes/superutilisateur) — même principe de liste à cocher. Une fonctionnalité non cochée garde sa valeur par défaut (voir la référence des options) : pas besoin de répondre à des questions sur des fonctionnalités que vous n'utilisez pas.
+3. Pour chaque fonctionnalité cochée, une série de questions ciblées avec valeur par défaut proposée entre crochets (Entrée pour l'accepter).
+4. **Aperçu complet** du bloc `FORGE_AUTH` généré, puis confirmation explicite avant toute écriture — rien n'est modifié si vous répondez non.
+5. Le bloc validé est ajouté **à la fin** du fichier de settings du projet hôte (déduit de `DJANGO_SETTINGS_MODULE`, ou précisé via `--settings-file`).
+
+```
+$ uv run manage.py forge_auth_setup
+Assistant de configuration forge_auth
+...
+2. Champs du modèle User
+Cochez les champs à ACTIVER (numéros séparés par des virgules pour basculer, Entrée pour valider) :
+  [x] 1. Statut de vérification de compte (status)
+  [x] 2. Secret OTP applicatif (otp_secret)
+  [x] 3. Photo de profil (profile_photo)
+Numéros à basculer, ou Entrée pour valider : 2
+  [x] 1. Statut de vérification de compte (status)
+  [ ] 2. Secret OTP applicatif (otp_secret)
+  [x] 3. Photo de profil (profile_photo)
+Numéros à basculer, ou Entrée pour valider :
+...
+Aperçu du bloc à ajouter
+FORGE_AUTH = {   'USERNAME_FIELD': 'phone_number',
+    ...
+Ajouter ce bloc à la fin de /chemin/vers/settings.py ? [o/N] :
+```
+
+Points d'attention :
+
+- Si `FORGE_AUTH` est **déjà défini** dans le fichier cible, la commande le détecte et prévient qu'ajouter un nouveau bloc à la fin écrasera silencieusement l'ancien à l'exécution (Python exécute le fichier de haut en bas) — elle demande une confirmation explicite avant de continuer, et s'arrête par défaut.
+- La commande n'écrit **jamais** sans l'aperçu + la confirmation finale ; `Ctrl-C` à tout moment annule proprement sans rien modifier.
+- Le mot de passe du superutilisateur par défaut est saisi via une entrée masquée (`getpass`), mais apparaît en clair dans l'aperçu final et dans le fichier écrit — c'est `CREDENTIALS_SUPERUSER`, un mot de passe de bootstrap à changer avant la mise en production, pas un secret géré différemment du reste de `settings.py`.
+- Elle ne touche jamais `INSTALLED_APPS`/`AUTH_USER_MODEL`/`REST_FRAMEWORK` (trop risqué de les modifier par simple ajout de texte sans analyser le fichier) : elle rappelle ces étapes restantes en fin d'exécution.
 
 ## Référence complète des options `FORGE_AUTH`
 
@@ -729,4 +777,5 @@ La configuration de test se trouve dans `tests/settings.py` et `tests/urls.py`. 
 | `tests/test_social_auth.py` | Connexion sociale OIDC (`forge_auth.social.verify_id_token` mocké). |
 | `tests/test_throttling.py` | `ForgeAuthScopedRateThrottle` : no-op par défaut, applique le débit si configuré. |
 | `tests/test_i18n.py` | Régression sur les messages traduits (`gettext_lazy`) qui ne doivent jamais crasher (`UnboundLocalError` sur l'alias `_`). |
+| `tests/test_management_command.py` | Commande `forge_auth_setup` : sélections multiples, confirmation finale, détection d'un `FORGE_AUTH` déjà présent, saisie masquée du mot de passe. |
 | `tests/_helpers.py` | Utilitaires partagés (non collecté par pytest) : voir les docstrings pour les pièges de configuration en cours de test (`forge_auth_config.otp_conf`/`jwt_conf`/`register_include_in_otp` figés au démarrage, non rafraîchis par `reset()`). |
