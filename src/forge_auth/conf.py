@@ -33,14 +33,45 @@ class JWTConf:
     USE_JWT: bool = True
     VIA_JSON: bool = True
     VIA_HTTP_ONLY: bool = False
+    ROTATE_REFRESH_TOKENS: bool = False
 
     def __init__(self, **kwargs):
         self.USE_JWT = bool(kwargs.get("USE_JWT", True))
         self.VIA_JSON = bool(kwargs.get("VIA_JSON", True))
         self.VIA_HTTP_ONLY = bool(kwargs.get("VIA_HTTP_ONLY", False))
+        # Nécessite rest_framework_simplejwt.token_blacklist : sans lui,
+        # l'ancien refresh token n'est jamais blackliste et reste valide.
+        self.ROTATE_REFRESH_TOKENS = bool(kwargs.get("ROTATE_REFRESH_TOKENS", False))
 
 
-OPTIONAL_FIELD_TYPE = Literal["status", "otp_secret"]
+class AccountLockoutConf:
+    MAX_ATTEMPTS: int | None = 5
+    LOCKOUT_DURATION: int = 900  # secondes
+
+    def __init__(self, **kwargs):
+        self.MAX_ATTEMPTS = kwargs.get("MAX_ATTEMPTS", 5)
+        self.LOCKOUT_DURATION = kwargs.get("LOCKOUT_DURATION", 900)
+
+
+class MfaTotpConf:
+    ISSUER_NAME: str = "ForgeAuth"
+    BACKUP_CODES_COUNT: int = 10
+
+    def __init__(self, **kwargs):
+        self.ISSUER_NAME = kwargs.get("ISSUER_NAME", "ForgeAuth")
+        self.BACKUP_CODES_COUNT = kwargs.get("BACKUP_CODES_COUNT", 10)
+
+
+class MagicLinkConf:
+    ENABLED: bool = False
+    LIFETIME: int = 900  # secondes
+
+    def __init__(self, **kwargs):
+        self.ENABLED = bool(kwargs.get("ENABLED", False))
+        self.LIFETIME = kwargs.get("LIFETIME", 900)
+
+
+OPTIONAL_FIELD_TYPE = Literal["status", "otp_secret", "profile_photo"]
 USERNAME_FIELD_TYPE = Literal["phone_number", "email"]
 
 class ForgeAuthConfigType(TypedDict, total=False):
@@ -54,6 +85,10 @@ class ForgeAuthConfigType(TypedDict, total=False):
     REGISTER_INCLUDE_IN_OTP: bool
     GROUP_DEFAULT: str
     GROUPS: List[str]
+    ACCOUNT_LOCKOUT: AccountLockoutConf
+    MFA_TOTP: MfaTotpConf
+    MAGIC_LINK: MagicLinkConf
+    SOCIAL_AUTH: dict
 
 ForgeAuthConfigKeys = Literal[
     "OPTIONAL_FIELDS",
@@ -65,7 +100,11 @@ ForgeAuthConfigKeys = Literal[
     "JWT",
     "REGISTER_INCLUDE_IN_OTP",
     "GROUP_DEFAULT",
-    "GROUPS"
+    "GROUPS",
+    "ACCOUNT_LOCKOUT",
+    "MFA_TOTP",
+    "MAGIC_LINK",
+    "SOCIAL_AUTH",
 ]
 
 class ForgeAuthConfig:
@@ -93,9 +132,13 @@ class ForgeAuthConfig:
         # le group par defaut des nouveau utilise si aucun group n'est present leujr de leur création
         "GROUP_DEFAULT": None,
         "GROUPS": [],  # listes des groups a crée dès l'applicatino des migrations
+        "ACCOUNT_LOCKOUT": AccountLockoutConf(),
+        "MFA_TOTP": MfaTotpConf(),
+        "MAGIC_LINK": MagicLinkConf(),
+        "SOCIAL_AUTH": {},  # {"google": {"ISSUER": "...", "CLIENT_ID": "..."}, ...}
     }
 
-    AVAILABLE_OPTIONAL_FIELDS: set = {"otp_secret", "status"}
+    AVAILABLE_OPTIONAL_FIELDS: set = {"otp_secret", "status", "profile_photo"}
     AVAILABLE_USERNAME_FIELDS: set = {"phone_number", "email"}
 
     # Cache interne : None = pas encore résolu
@@ -112,6 +155,9 @@ class ForgeAuthConfig:
             "REGISTER_INCLUDE_IN_OTP")
         self.group_default: str = self.get("GROUP_DEFAULT")
         self.groups: list = self.get("GROUPS")
+        self.account_lockout_conf: AccountLockoutConf = self.get("ACCOUNT_LOCKOUT")
+        self.mfa_totp_conf: MfaTotpConf = self.get("MFA_TOTP")
+        self.magic_link_conf: MagicLinkConf = self.get("MAGIC_LINK")
 
     def _raw(self) -> dict:
         """Retourne le dict FORGE_AUTH brut depuis settings """
@@ -123,10 +169,16 @@ class ForgeAuthConfig:
             **raw.get("CREDENTIALS_SUPERUSER", {}))
         otp = OTPConf(**raw.get("OTP", {}))
         jwt = JWTConf(**raw.get("JWT", {}))
+        account_lockout = AccountLockoutConf(**raw.get("ACCOUNT_LOCKOUT", {}))
+        mfa_totp = MfaTotpConf(**raw.get("MFA_TOTP", {}))
+        magic_link = MagicLinkConf(**raw.get("MAGIC_LINK", {}))
         data = {**self._DEFAULTS, **raw}
         data["CREDENTIALS_SUPERUSER"] = credential_superuser
         data["OTP"] = otp
         data["JWT"] = jwt
+        data["ACCOUNT_LOCKOUT"] = account_lockout
+        data["MFA_TOTP"] = mfa_totp
+        data["MAGIC_LINK"] = magic_link
         return data
 
     def get(self, key: ForgeAuthConfigKeys) -> Any:
@@ -198,6 +250,33 @@ class ForgeAuthConfig:
                 f"'JWT' doit peut être un dict, "
                 f"reçu : {type(jwt).__name__}"
             )
+
+        for key in ("ACCOUNT_LOCKOUT", "MFA_TOTP", "MAGIC_LINK"):
+            value = raw.get(key, {})
+            if not isinstance(value, dict):
+                errors.append(
+                    f"'{key}' doit être un dict, reçu : {type(value).__name__}"
+                )
+
+        # validation de SOCIAL_AUTH : {provider_name: {ISSUER, CLIENT_ID}}
+        social_auth = raw.get("SOCIAL_AUTH", {})
+        if not isinstance(social_auth, dict):
+            errors.append(
+                f"'SOCIAL_AUTH' doit être un dict, reçu : {type(social_auth).__name__}"
+            )
+        else:
+            for provider, provider_conf in social_auth.items():
+                if not isinstance(provider_conf, dict):
+                    errors.append(
+                        f"'SOCIAL_AUTH[\"{provider}\"]' doit être un dict, "
+                        f"reçu : {type(provider_conf).__name__}"
+                    )
+                    continue
+                missing = {"ISSUER", "CLIENT_ID"} - set(provider_conf)
+                if missing:
+                    errors.append(
+                        f"'SOCIAL_AUTH[\"{provider}\"]' : clés manquantes {missing}"
+                    )
 
         # Résultat
         if errors:

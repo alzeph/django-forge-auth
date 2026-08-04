@@ -6,6 +6,8 @@ from forge_auth.conf import forge_auth_config
 def build_fieldsets():
     username_field = forge_auth_config.get("USERNAME_FIELD")
     personal_fields = ["first_name", "last_name"]
+    if forge_auth_config.is_enabled_field("profile_photo"):
+        personal_fields.append("profile_photo")
 
     extra_fields = []
     if forge_auth_config.is_enabled_field("status"):

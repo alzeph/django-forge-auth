@@ -12,7 +12,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils.translation import gettext_lazy as _
 
 from forge_auth.conf import forge_auth_config
-from forge_auth.models import OtpToken
+from forge_auth.models import ApiKey, LoginAuditLog, OtpToken, SessionMetadata, SocialAccount, TotpDevice
 from forge_auth.utils import build_fieldsets, build_list_display
 
 
@@ -49,3 +49,43 @@ if _use_otp and _otp_enabled:
         list_display  = ["user", "created_at", "updated_at"]
         readonly_fields = ["created_at", "updated_at"]
         search_fields = ["user__phone_number"]
+
+
+@admin.register(ApiKey)
+class ApiKeyAdmin(admin.ModelAdmin):
+    list_display = ["name", "user", "prefix", "created_at", "last_used_at", "revoked_at"]
+    list_filter = ["revoked_at"]
+    readonly_fields = ["prefix", "hashed_key", "created_at", "last_used_at"]
+    search_fields = ["name", "user__phone_number", "user__email"]
+
+
+@admin.register(SessionMetadata)
+class SessionMetadataAdmin(admin.ModelAdmin):
+    list_display = ["user", "ip_address", "user_agent", "created_at", "last_seen_at", "revoked_at"]
+    list_filter = ["revoked_at"]
+    readonly_fields = ["jti", "created_at", "last_seen_at"]
+    search_fields = ["user__phone_number", "user__email", "ip_address"]
+
+
+@admin.register(LoginAuditLog)
+class LoginAuditLogAdmin(admin.ModelAdmin):
+    list_display = ["username_attempted", "user", "result", "reason", "ip_address", "created_at"]
+    list_filter = ["result"]
+    readonly_fields = [f.name for f in LoginAuditLog._meta.fields]
+    search_fields = ["username_attempted", "user__phone_number", "user__email", "ip_address"]
+
+
+@admin.register(TotpDevice)
+class TotpDeviceAdmin(admin.ModelAdmin):
+    list_display = ["user", "confirmed", "created_at"]
+    list_filter = ["confirmed"]
+    readonly_fields = ["secret", "created_at"]
+    search_fields = ["user__phone_number", "user__email"]
+
+
+@admin.register(SocialAccount)
+class SocialAccountAdmin(admin.ModelAdmin):
+    list_display = ["user", "provider", "subject", "email", "created_at"]
+    list_filter = ["provider"]
+    readonly_fields = ["created_at"]
+    search_fields = ["user__phone_number", "user__email", "subject"]

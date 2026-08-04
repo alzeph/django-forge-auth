@@ -1,4 +1,6 @@
 import logging
+import secrets
+from datetime import timedelta
 
 import pyotp
 
@@ -14,6 +16,7 @@ from django.contrib.auth.models import (
 from django.core.validators import validate_email
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from forge_auth.conf import forge_auth_config
@@ -165,6 +168,27 @@ class StatusMixin(models.Model):
         abstract = True
 
 
+class ProfilePhotoMixin(models.Model):
+    """
+    Ajoute le champ ``profile_photo`` au modèle User.
+
+    Ce mixin est inclus uniquement si `profile_photo` n'est PAS dans
+    `OPTIONAL_FIELDS`. Nécessite Pillow (dépendance de `django-forge-auth`)
+    et un stockage de fichiers configuré côté projet hôte (MEDIA_ROOT/
+    MEDIA_URL, ou un backend `django-storages` pour S3/GCS...).
+    """
+
+    profile_photo = models.ImageField(
+        upload_to="forge_auth/profile_photos/",
+        null=True,
+        blank=True,
+        verbose_name=_("Photo de profil"),
+    )
+
+    class Meta:
+        abstract = True
+
+
 def _build_user_bases() -> tuple:
     """
     Construit la liste des classes parentes de User en fonction des champs
@@ -179,6 +203,9 @@ def _build_user_bases() -> tuple:
 
     if "status" not  in forge_auth_config.optional_fields:
         bases.insert(0, StatusMixin)
+
+    if "profile_photo" not in forge_auth_config.optional_fields:
+        bases.insert(0, ProfilePhotoMixin)
 
     return tuple(bases)
 
@@ -199,6 +226,7 @@ class User(*_build_user_bases()):
     --------------------------------------------------------------------
     otp_secret       – secret TOTP (via OtpSecretMixin)
     status           – statut de vérification (via StatusMixin)
+    profile_photo    – photo de profil (via ProfilePhotoMixin)
     """
     username_field = forge_auth_config.get_username_field()
    
@@ -228,6 +256,11 @@ class User(*_build_user_bases()):
         Permission, blank=True, verbose_name=_("Permissions")
     )
     date_joined = models.DateTimeField(auto_now_add=True, verbose_name=_("Date d'inscription"))
+    # Verrouillage de compte (FORGE_AUTH["ACCOUNT_LOCKOUT"]) : toujours présents
+    # (légers), la fonctionnalité elle-même est désactivable via
+    # ACCOUNT_LOCKOUT.MAX_ATTEMPTS = None.
+    failed_login_attempts = models.PositiveIntegerField(default=0, editable=False, verbose_name=_("Échecs de connexion consécutifs"))
+    locked_until = models.DateTimeField(null=True, blank=True, editable=False, verbose_name=_("Verrouillé jusqu'à"))
     objects = UserManager()
     USERNAME_FIELD  = forge_auth_config.get_username_field()
     REQUIRED_FIELDS = []
@@ -258,6 +291,32 @@ class User(*_build_user_bases()):
         except Exception:
             return False
 
+    @property
+    def is_locked(self) -> bool:
+        """True si le compte est temporairement verrouillé (voir ACCOUNT_LOCKOUT)."""
+        return bool(self.locked_until and self.locked_until > timezone.now())
+
+    def register_failed_login(self) -> None:
+        """
+        Incrémente le compteur d'échecs de connexion et verrouille le compte
+        si `ACCOUNT_LOCKOUT.MAX_ATTEMPTS` est atteint. No-op si MAX_ATTEMPTS
+        est None/0 (fonctionnalité désactivée).
+        """
+        conf = forge_auth_config.account_lockout_conf
+        if not conf.MAX_ATTEMPTS:
+            return
+        self.failed_login_attempts += 1
+        if self.failed_login_attempts >= conf.MAX_ATTEMPTS:
+            self.locked_until = timezone.now() + timedelta(seconds=conf.LOCKOUT_DURATION)
+            logger.warning("register_failed_login: compte verrouillé jusqu'à %s pour user=%s", self.locked_until, self)
+        self.save(update_fields=["failed_login_attempts", "locked_until"])
+
+    def register_successful_login(self) -> None:
+        """Réinitialise le compteur d'échecs après une connexion réussie."""
+        if self.failed_login_attempts or self.locked_until:
+            self.failed_login_attempts = 0
+            self.locked_until = None
+            self.save(update_fields=["failed_login_attempts", "locked_until"])
 
     @staticmethod
     def get(username: str) -> "User":
@@ -408,3 +467,225 @@ else:
                 "OtpToken est désactivé. "
                 "Activez-le en mettant  USE_OTP=True"
             )
+
+
+class SessionMetadata(models.Model):
+    """
+    Métadonnées d'une session (un refresh token émis), pour la gestion des
+    appareils/sessions ("lister mes sessions actives", "déconnecter cet
+    appareil précis").
+
+    Volontairement pas de ForeignKey vers
+    `rest_framework_simplejwt.token_blacklist.models.OutstandingToken` :
+    `jti` est stocké en simple CharField pour ne pas rendre ce modèle (et sa
+    migration) dépendants de l'installation de `token_blacklist`. `revoke()`
+    blackliste malgré tout le token correspondant si `token_blacklist` est
+    disponible (voir `_revoke_outstanding_tokens` dans `views.py`).
+    """
+
+    user = models.ForeignKey(
+        "forge_auth.User", on_delete=models.CASCADE, related_name="sessions",
+        verbose_name=_("Utilisateur"),
+    )
+    jti = models.CharField(max_length=255, unique=True, verbose_name=_("JTI du refresh token"))
+    user_agent = models.CharField(max_length=255, blank=True, default="", verbose_name=_("User-Agent"))
+    ip_address = models.GenericIPAddressField(null=True, blank=True, verbose_name=_("Adresse IP"))
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Créée le"))
+    last_seen_at = models.DateTimeField(auto_now=True, verbose_name=_("Dernière activité"))
+    revoked_at = models.DateTimeField(null=True, blank=True, verbose_name=_("Révoquée le"))
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at is not None
+
+    def revoke(self) -> None:
+        """Marque la session comme révoquée et blackliste le refresh token associé (si possible)."""
+        self.revoked_at = timezone.now()
+        self.save(update_fields=["revoked_at"])
+        try:
+            from rest_framework_simplejwt.token_blacklist.models import (
+                BlacklistedToken, OutstandingToken,
+            )
+        except ImportError:
+            return
+        try:
+            outstanding = OutstandingToken.objects.get(jti=self.jti)
+        except OutstandingToken.DoesNotExist:
+            return
+        BlacklistedToken.objects.get_or_create(token=outstanding)
+        logger.info("SessionMetadata.revoke: session %s révoquée pour user=%s", self.jti, self.user)
+
+    class Meta:
+        verbose_name = _("session")
+        verbose_name_plural = _("sessions")
+        ordering = ("-last_seen_at",)
+
+
+class LoginAuditLog(models.Model):
+    """
+    Historique des tentatives de connexion (réussies ou échouées), pour audit
+    de sécurité et affichage côté utilisateur ("dernières connexions").
+
+    `user` est nullable : un échec sur un identifiant inconnu doit rester
+    tracé (utile pour repérer une campagne de brute force), sans pouvoir
+    être rattaché à un utilisateur réel.
+    """
+
+    class Result(models.TextChoices):
+        SUCCESS = "success", _("Succès")
+        FAILURE = "failure", _("Échec")
+
+    user = models.ForeignKey(
+        "forge_auth.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="login_audit_logs", verbose_name=_("Utilisateur"),
+    )
+    username_attempted = models.CharField(max_length=255, blank=True, default="", verbose_name=_("Identifiant saisi"))
+    result = models.CharField(max_length=10, choices=Result.choices, verbose_name=_("Résultat"))
+    reason = models.CharField(max_length=255, blank=True, default="", verbose_name=_("Motif"))
+    ip_address = models.GenericIPAddressField(null=True, blank=True, verbose_name=_("Adresse IP"))
+    user_agent = models.CharField(max_length=255, blank=True, default="", verbose_name=_("User-Agent"))
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Horodatage"))
+
+    class Meta:
+        verbose_name = _("historique de connexion")
+        verbose_name_plural = _("historiques de connexion")
+        ordering = ("-created_at",)
+
+
+class ApiKey(models.Model):
+    """
+    Clé d'API pour l'authentification machine-à-machine (voir
+    `authentification.py::ApiKeyAuthentication`).
+
+    La clé en clair n'est jamais stockée : seul son hash (`make_password`,
+    même mécanisme que les mots de passe) est conservé. `prefix` (préfixe de
+    la clé en clair, non secret) permet de retrouver rapidement la ligne
+    candidate sans avoir à `check_password` sur toutes les clés existantes.
+    """
+
+    user = models.ForeignKey(
+        "forge_auth.User", on_delete=models.CASCADE, related_name="api_keys",
+        verbose_name=_("Utilisateur"),
+    )
+    name = models.CharField(max_length=100, verbose_name=_("Nom"))
+    prefix = models.CharField(max_length=12, editable=False, db_index=True, verbose_name=_("Préfixe"))
+    hashed_key = models.CharField(max_length=128, editable=False, verbose_name=_("Clé (hachée)"))
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Créée le"))
+    last_used_at = models.DateTimeField(null=True, blank=True, verbose_name=_("Dernière utilisation"))
+    revoked_at = models.DateTimeField(null=True, blank=True, verbose_name=_("Révoquée le"))
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at is not None
+
+    @staticmethod
+    def generate_key() -> tuple[str, str, str]:
+        """Retourne (clé en clair, préfixe, hash). La clé en clair n'est jamais stockée."""
+        raw_key = secrets.token_urlsafe(32)
+        prefix = raw_key[:12]
+        return raw_key, prefix, make_password(raw_key)
+
+    def verify_key(self, raw_key: str) -> bool:
+        return check_password(raw_key, self.hashed_key)
+
+    def revoke(self) -> None:
+        self.revoked_at = timezone.now()
+        self.save(update_fields=["revoked_at"])
+
+    class Meta:
+        verbose_name = _("clé API")
+        verbose_name_plural = _("clés API")
+        ordering = ("-created_at",)
+
+
+class TotpDevice(models.Model):
+    """
+    Second facteur TOTP applicatif (Google Authenticator, Authy...),
+    indépendant de l'OTP SMS/WhatsApp de connexion (`OtpToken`) : celui-ci
+    sert de méthode de connexion à part entière selon `FORGE_AUTH["OTP"]`,
+    alors que `TotpDevice` est un facteur additionnel, activé volontairement
+    par l'utilisateur, vérifié en plus du mot de passe.
+    """
+
+    user = models.OneToOneField(
+        "forge_auth.User", on_delete=models.CASCADE, related_name="totp_device",
+        verbose_name=_("Utilisateur"),
+    )
+    secret = models.CharField(max_length=32, default=pyotp.random_base32, editable=False, verbose_name=_("Secret TOTP"))
+    confirmed = models.BooleanField(default=False, verbose_name=_("Confirmé"))
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Créé le"))
+
+    def provisioning_uri(self) -> str:
+        """URI `otpauth://` à encoder en QR code côté client (app d'authentification)."""
+        issuer = forge_auth_config.mfa_totp_conf.ISSUER_NAME
+        return pyotp.TOTP(self.secret).provisioning_uri(name=self.user.username, issuer_name=issuer)
+
+    def verify(self, code: str) -> bool:
+        return pyotp.TOTP(self.secret).verify(code, valid_window=1)
+
+    def generate_backup_codes(self) -> list[str]:
+        """
+        (Re)génère les codes de secours : supprime les anciens et en crée de
+        nouveaux. Retourne les codes en clair (à afficher une seule fois).
+        """
+        count = forge_auth_config.mfa_totp_conf.BACKUP_CODES_COUNT
+        self.backup_codes.all().delete()
+        plain_codes = [secrets.token_hex(4) for _i in range(count)]
+        TotpBackupCode.objects.bulk_create([
+            TotpBackupCode(device=self, code_hash=make_password(code))
+            for code in plain_codes
+        ])
+        logger.info("generate_backup_codes: %d codes de secours régénérés pour user=%s", count, self.user)
+        return plain_codes
+
+    def consume_backup_code(self, code: str) -> bool:
+        """Vérifie un code de secours et le marque comme utilisé (usage unique)."""
+        for backup_code in self.backup_codes.filter(used_at__isnull=True):
+            if check_password(code, backup_code.code_hash):
+                backup_code.used_at = timezone.now()
+                backup_code.save(update_fields=["used_at"])
+                return True
+        return False
+
+    class Meta:
+        verbose_name = _("appareil TOTP")
+        verbose_name_plural = _("appareils TOTP")
+
+
+class TotpBackupCode(models.Model):
+    device = models.ForeignKey(TotpDevice, on_delete=models.CASCADE, related_name="backup_codes")
+    code_hash = models.CharField(max_length=128, verbose_name=_("Code (haché)"))
+    used_at = models.DateTimeField(null=True, blank=True, verbose_name=_("Utilisé le"))
+
+    @property
+    def is_used(self) -> bool:
+        return self.used_at is not None
+
+    class Meta:
+        verbose_name = _("code de secours TOTP")
+        verbose_name_plural = _("codes de secours TOTP")
+
+
+class SocialAccount(models.Model):
+    """
+    Compte social lié (connexion OIDC, voir `FORGE_AUTH["SOCIAL_AUTH"]`).
+
+    `(provider, subject)` identifie de façon stable le compte chez le
+    fournisseur (`subject` = claim `sub` de l'id_token) : c'est cette paire,
+    pas l'email, qui sert de clé de liaison (une adresse email peut changer
+    ou ne pas être vérifiée par le fournisseur).
+    """
+
+    user = models.ForeignKey(
+        "forge_auth.User", on_delete=models.CASCADE, related_name="social_accounts",
+        verbose_name=_("Utilisateur"),
+    )
+    provider = models.CharField(max_length=50, verbose_name=_("Fournisseur"))
+    subject = models.CharField(max_length=255, verbose_name=_("Identifiant chez le fournisseur (sub)"))
+    email = models.EmailField(blank=True, default="", verbose_name=_("E-mail communiqué par le fournisseur"))
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("Lié le"))
+
+    class Meta:
+        verbose_name = _("compte social")
+        verbose_name_plural = _("comptes sociaux")
+        unique_together = ("provider", "subject")

@@ -1,5 +1,12 @@
+import tempfile
+
 SECRET_KEY = "test-secret-key"
 DEBUG = True
+
+# Nécessaire pour ProfilePhotoMixin (ImageField) : hors du dépôt, dans un
+# répertoire temporaire, pour ne jamais laisser de fichier uploadé traîner
+# dans l'arbre du projet après les tests.
+MEDIA_ROOT = tempfile.mkdtemp(prefix="forge_auth_test_media_")
 
 INSTALLED_APPS = [
     "django.contrib.auth",
@@ -30,6 +37,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "forge_auth.authentification.JWTAuthenticationFlexible",
+        # Optionnel côté lib (voir authentification.py::ApiKeyAuthentication) :
+        # activé ici pour pouvoir tester le flux clés API de bout en bout.
+        "forge_auth.authentification.ApiKeyAuthentication",
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,

@@ -78,6 +78,53 @@ Utilisation côté projet hôte :
 """
 
 
+contact_verification_requested = Signal()
+"""
+Envoyé par ``UserViewSet.request_contact_verification`` juste après la
+génération d'un token de vérification pour un champ de contact (email ou
+téléphone), avant que la réponse ne soit renvoyée au client. Même principe
+que ``otp_requested``/``password_reset_requested`` : rien n'envoie le lien
+par défaut, c'est le point d'extension prévu pour ça.
+
+Arguments envoyés : ``sender`` (la classe ``UserViewSet``), ``request``,
+``user``, ``field`` (``"email"`` ou ``"phone_number"``), ``token``.
+
+Utilisation côté projet hôte :
+
+    from django.dispatch import receiver
+    from forge_auth.signals import contact_verification_requested
+
+    @receiver(contact_verification_requested)
+    def on_forge_auth_contact_verification_requested(sender, request, user, field, token, **kwargs):
+        if field == "email":
+            send_email(user.email, f"https://example.com/verify-email?token={token}")
+        else:
+            send_sms(user.phone_number, f"Code de vérification : {token}")
+"""
+
+
+magic_link_requested = Signal()
+"""
+Envoyé par ``UserViewSet.request_magic_link`` juste après la génération d'un
+token de connexion sans mot de passe, avant que la réponse ne soit renvoyée
+au client. Actif uniquement si ``FORGE_AUTH["MAGIC_LINK"]["ENABLED"]`` est
+``True``. Rien n'envoie le lien par défaut, c'est le point d'extension prévu
+pour ça (même principe que ``otp_requested``).
+
+Arguments envoyés : ``sender`` (la classe ``UserViewSet``), ``request``,
+``user``, ``token``.
+
+Utilisation côté projet hôte :
+
+    from django.dispatch import receiver
+    from forge_auth.signals import magic_link_requested
+
+    @receiver(magic_link_requested)
+    def on_forge_auth_magic_link_requested(sender, request, user, token, **kwargs):
+        send_email(user.email, f"https://example.com/magic-login?token={token}")
+"""
+
+
 @receiver(post_migrate)
 def create_superuser(sender, **kwargs):
     logger.debug("create_superuser: signal post_migrate reçu (sender=%s)", sender)

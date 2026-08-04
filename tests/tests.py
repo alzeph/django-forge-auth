@@ -10,6 +10,17 @@ from django.urls import reverse
 User = get_user_model()
 
 
+def _set_known_password(user, raw_password: str) -> None:
+    """
+    Les utilisateurs créés par la fixture ForgeCase ont un mot de passe
+    aléatoire (haché) dont on ne connaît pas la valeur en clair : nécessaire
+    pour tester l'auto-suppression de compte, qui exige désormais le mot de
+    passe courant (voir UserViewSet.destroy).
+    """
+    user.set_password(raw_password)
+    user.save(update_fields=['password'])
+
+
 def _jwt_authenticated_client(user) -> Client:
     """
     forge_auth authentifie uniquement via JWT (JWTAuthenticationFlexible) :
@@ -197,7 +208,15 @@ class UserTestCase(ForgeCase):
                     'model': User,
                 },
                 'expected_responses': {
-                    204: {'authenticated': True},
+                    204: {
+                        'authenticated': True,
+                        # Auto-suppression : mot de passe courant requis
+                        # depuis le correctif UserViewSet.destroy.
+                        'pre_test': lambda t: _set_known_password(t.user, 'DeleteMe123!'),
+                        'http_client_params': {
+                            'fixture': {'data': {'password': 'DeleteMe123!'}},
+                        },
+                    },
                     401: {'authenticated': False},
                     404: {
                         'authenticated': True,
