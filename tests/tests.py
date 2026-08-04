@@ -78,11 +78,15 @@ class UserTestCase(ForgeCase):
                 'fixture': {
                     'object_name': 'user',
                     'model': User,
+                    # `list` est réservé au staff depuis le correctif IDOR
+                    # (voir forge_auth.permissions.IsSelfOrAdmin) : sans
+                    # is_staff=True ici, ce serait un 403, pas un 200.
+                    'kwargs': {'is_staff': True},
                 },
                 'expected_responses': {
                     200: {
                         'authenticated': True,
-                        'expected_fields': ['results', 'results.0.pk', 'results.0.first_name', 'results.0.last_name', 'results.0.groups']
+                        'expected_fields': ['results', 'results.0.pk', 'results.0.first_name', 'results.0.last_name', 'results.0.groups_detail']
                     },
                     401: {
                         'authenticated': False
@@ -103,7 +107,7 @@ class UserTestCase(ForgeCase):
                 'expected_responses': {
                     200: {
                         'authenticated': True,
-                        'expected_fields': ['pk', 'first_name', 'last_name', 'groups'],
+                        'expected_fields': ['pk', 'first_name', 'last_name', 'groups_detail'],
                         'expected_type_of_fields': {'pk': int},
                         'expected_response': dict
                     },

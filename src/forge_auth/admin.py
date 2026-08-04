@@ -42,11 +42,10 @@ _otp_enabled =  "otp_secret" not in forge_auth_config.optional_fields
 # Enregistrement conditionnel de OtpToken
 
 if _use_otp and _otp_enabled:
-    try:
-        @admin.register(OtpToken)
-        class OtpTokenAdmin(admin.ModelAdmin):
-            list_display  = ["user", "created_at", "updated_at"]
-            readonly_fields = ["created_at", "updated_at"]
-            search_fields = ["user__phone_number"]
-    except Exception:
-        pass  # OtpToken est un placeholder — pas de table en base
+    # OtpToken est un vrai modèle Django dans cette branche (voir
+    # models.py::_use_otp/_otp_enabled) : pas besoin de try/except ici.
+    @admin.register(OtpToken)
+    class OtpTokenAdmin(admin.ModelAdmin):
+        list_display  = ["user", "created_at", "updated_at"]
+        readonly_fields = ["created_at", "updated_at"]
+        search_fields = ["user__phone_number"]

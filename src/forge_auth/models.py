@@ -39,12 +39,27 @@ class UserManager(BaseUserManager):
 
         if groups:
             if isinstance(groups, list):
-                groups = Group.objects.filter(name__in=groups)
+                # Accepte un mélange d'instances Group et de noms (str).
+                names = [g.name if isinstance(g, Group) else g for g in groups]
+                groups = Group.objects.filter(name__in=names)
                 logger.debug("create_user: ajout de %d groupes à l'utilisateur %s", len(groups), username)
                 user.groups.set(groups or [])
+        else:
+            group_default = forge_auth_config.get("GROUP_DEFAULT")
+            if group_default:
+                default_group, _created = Group.objects.get_or_create(name=group_default)
+                user.groups.add(default_group)
+                logger.debug("create_user: groupe par défaut '%s' assigné à %s", group_default, username)
         if permissions:
             if isinstance(permissions, list):
-                permissions = Permission.objects.filter(codename__in=permissions)
+                # Accepte un mélange d'instances Permission et de codenames (str).
+                # Avant ce correctif : `codename__in=permissions` comparait
+                # `codename` à `str(instance)` (ex. "app | model | Can add
+                # model") quand une instance Permission était passée, donc ne
+                # matchait jamais rien (contrairement à Group, dont le
+                # `__str__` vaut justement `name` par coïncidence).
+                codenames = [p.codename if isinstance(p, Permission) else p for p in permissions]
+                permissions = Permission.objects.filter(codename__in=codenames)
                 logger.debug("create_user: ajout de %d permissions à l'utilisateur %s", len(permissions), username)
                 user.user_permissions.set(permissions or [])
 

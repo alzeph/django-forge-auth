@@ -10,10 +10,13 @@ Application Django réutilisable fournissant un système d'authentification comp
 - Référence complète des options `FORGE_AUTH`
 - Scénarios de configuration détaillés
 - Endpoints de l'API
+- Permissions : `IsSelfOrAdmin`
+- Throttling
 - Exemples d'utilisation
 - Modèle `User` : méthodes et propriétés utiles
 - Signal `user_logged_in`
 - Signal `otp_requested`
+- Signal `password_reset_requested`
 - Avertissement sur les migrations
 - Points non automatisés (à implémenter côté projet hôte)
 - Notes de sécurité
@@ -26,7 +29,9 @@ Application Django réutilisable fournissant un système d'authentification comp
 - Authentification par mot de passe ou par code OTP, au choix.
 - JWT via header `Authorization: Bearer` ou via cookies httponly, au choix (les deux peuvent être actifs simultanément).
 - Backend d'authentification Django supportant plusieurs champs de connexion (`MultiFieldBackend`).
-- ViewSets DRF prêts à l'emploi : inscription, connexion, déconnexion, rafraîchissement de token, vérification d'unicité email/téléphone, utilisateur courant, vérification de session.
+- ViewSets DRF prêts à l'emploi : inscription, connexion, déconnexion, rafraîchissement de token, vérification d'unicité email/téléphone, utilisateur courant, vérification de session, changement de mot de passe, mot de passe oublié.
+- Contrôle d'accès par objet (`IsSelfOrAdmin`) sur `/users/` : un utilisateur ne voit/modifie que lui-même, le staff voit tout.
+- Limitation de débit (throttling) configurable sur les endpoints sensibles (login, OTP, refresh, reset de mot de passe).
 - Documentation OpenAPI via `drf-spectacular` (`extend_schema` déjà posé sur chaque action).
 - Validation de configuration au démarrage (`AppConfig.ready()`), qui stoppe le serveur si `FORGE_AUTH` est mal formé.
 
@@ -75,6 +80,25 @@ AUTHENTICATION_BACKENDS = [
     "forge_auth.backends.MultiFieldBackend",
     "django.contrib.auth.backends.ModelBackend",
 ]
+
+# [] par défaut dans Django (pas de validation) : à renseigner explicitement
+# si vous voulez que la création de compte, le changement de mot de passe et
+# la réinitialisation de mot de passe rejettent les mots de passe faibles.
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
+# Optionnel : débits de limitation de requêtes sur les endpoints sensibles
+# de forge_auth (no-op si absent, voir section "Throttling").
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
+    "forge_auth_login": "10/min",
+    "forge_auth_otp": "5/min",
+    "forge_auth_refresh": "30/min",
+    "forge_auth_password_reset": "5/min",
+}
 
 FORGE_AUTH = {}  # voir section "Référence complète" et "Scénarios"
 ```
@@ -209,18 +233,87 @@ Chemins relatifs au préfixe `forge_auth/` exposé par `forge_auth.urls`.
 | GET | `groups/` | Liste des groupes | Non |
 | GET | `groups/{id}/` | Détail d'un groupe | Non |
 | POST | `users/` | Inscription | Non |
-| GET | `users/` | Liste des utilisateurs | Oui |
-| GET | `users/{id}/` | Détail d'un utilisateur | Oui |
-| PATCH / PUT | `users/{id}/` | Modification d'un utilisateur | Oui |
-| DELETE | `users/{id}/` | Suppression d'un utilisateur | Oui |
+| GET | `users/` | Liste des utilisateurs | Oui, staff uniquement |
+| GET | `users/{id}/` | Détail d'un utilisateur | Oui, soi-même ou staff |
+| PATCH / PUT | `users/{id}/` | Modification d'un utilisateur | Oui, soi-même ou staff |
+| DELETE | `users/{id}/` | Suppression d'un utilisateur | Oui, soi-même ou staff |
 | POST | `users/verify-email/` | Vérifie si un email existe déjà | Non |
 | POST | `users/verify-phone/` | Vérifie si un téléphone existe déjà | Non |
 | GET | `users/current/` | Utilisateur courant | Oui |
 | POST | `users/login/` | Connexion (mot de passe ou OTP selon config) | Non |
 | POST | `users/logout/` | Déconnexion (blackliste le refresh token) | Oui |
 | GET | `users/session-check/` | Vérifie que la session/JWT est valide | Oui |
-| POST | `users/refresh/` | Rafraîchit le token d'accès | Oui |
+| POST | `users/refresh/` | Rafraîchit le token d'accès | Non (validé par le refresh token lui-même) |
 | POST | `users/obtain-otp/` | Génère et stocke un code OTP | Non |
+| POST | `users/authenticate-user/` | Étape 1 du flux F2FA (vérifie le mot de passe) | Non |
+| POST | `users/verify-otp-and-login/` | Étape 2 du flux F2FA (vérifie l'OTP et connecte) | Non |
+| POST | `users/change-password/` | Change son propre mot de passe (ancien mot de passe requis) | Oui |
+| POST | `users/request-password-reset/` | Démarre le flux mot de passe oublié (génère un token) | Non |
+| POST | `users/confirm-password-reset/` | Termine le flux mot de passe oublié (applique le nouveau mot de passe) | Non |
+
+### Changement de mot de passe
+
+```bash
+curl -X POST http://localhost:8000/api/forge_auth/users/change-password/ \
+  -H "Authorization: Bearer <access>" \
+  -H "Content-Type: application/json" \
+  -d '{"old_password": "ancien", "new_password": "nouveauMotDePasseSolide"}'
+```
+
+Le nouveau mot de passe est validé par `AUTH_PASSWORD_VALIDATORS` (settings Django standard). Les refresh tokens en cours sont blacklistés (si `rest_framework_simplejwt.token_blacklist` est installé) : les autres sessions ouvertes avec l'ancien mot de passe sont invalidées.
+
+### Mot de passe oublié
+
+Flux en deux étapes, basé sur `django.contrib.auth.tokens.default_token_generator` (stateless — aucun champ ni migration supplémentaire) :
+
+```bash
+# 1. Demande de réinitialisation : génère un token et envoie le signal
+#    password_reset_requested (voir plus bas — l'envoi réel du token par
+#    email/SMS est à la charge du projet hôte).
+curl -X POST http://localhost:8000/api/forge_auth/users/request-password-reset/ \
+  -H "Content-Type: application/json" \
+  -d '{"username": "+225000000001"}'
+
+# 2. Confirmation avec le token reçu (par email/SMS via le signal ci-dessus)
+curl -X POST http://localhost:8000/api/forge_auth/users/confirm-password-reset/ \
+  -H "Content-Type: application/json" \
+  -d '{"username": "+225000000001", "token": "<token>", "new_password": "nouveauMotDePasseSolide"}'
+```
+
+Le token expire après `PASSWORD_RESET_TIMEOUT` (setting Django, 3 jours par défaut) et devient automatiquement invalide dès que le mot de passe change (il est dérivé du hash du mot de passe). Comme pour `change-password`, les refresh tokens en cours sont blacklistés après une réinitialisation réussie.
+
+## Permissions : `IsSelfOrAdmin`
+
+`forge_auth.permissions.IsSelfOrAdmin` (câblée dans `UserViewSet.get_permissions()`) empêche l'IDOR sur `/users/` :
+
+- `list` : réservé aux utilisateurs avec `is_staff=True`.
+- `retrieve` / `update` / `partial_update` / `destroy` : autorisés uniquement à l'utilisateur concerné (`obj.pk == request.user.pk`) ou à un membre du staff.
+
+Sans cette permission, `IsAuthenticated` seul permettrait à n'importe quel utilisateur connecté de lire, modifier ou supprimer n'importe quel autre compte en changeant simplement le `{id}` dans l'URL.
+
+## Throttling
+
+Les actions sensibles (`login`, `authenticate-user`, `obtain-otp`, `verify-otp-and-login`, `refresh`, `request-password-reset`, `confirm-password-reset`) utilisent `forge_auth.throttling.ForgeAuthScopedRateThrottle`, une variante de `ScopedRateThrottle` de DRF qui **ne fait rien par défaut** : elle ne limite le débit d'une action que si son scope est explicitement configuré dans `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]` du projet hôte (sinon `ImproperlyConfigured` planterait la requête, ce que `ForgeAuthScopedRateThrottle` évite).
+
+Scopes utilisés :
+
+| Scope | Actions concernées |
+|---|---|
+| `forge_auth_login` | `login`, `authenticate-user` |
+| `forge_auth_otp` | `obtain-otp`, `verify-otp-and-login` |
+| `forge_auth_refresh` | `refresh` |
+| `forge_auth_password_reset` | `request-password-reset`, `confirm-password-reset` |
+
+Exemple de configuration (voir aussi "Configuration rapide") :
+
+```python
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
+    "forge_auth_login": "10/min",
+    "forge_auth_otp": "5/min",
+    "forge_auth_refresh": "30/min",
+    "forge_auth_password_reset": "5/min",
+}
+```
 
 ## Exemples d'utilisation
 
@@ -305,7 +398,7 @@ curl -X POST http://localhost:8000/api/forge_auth/users/verify-email/ \
 - `user.full_name` : `"Prénom Nom"`.
 - `user.is_valid_email` / `user.is_valid_phone_number` : validité syntaxique.
 - `User.get(username)` : recherche sur `USERNAME_FIELD` et `ALTERNATIVE_USERNAME_FIELDS`, lève `User.DoesNotExist` ou `PermissionError` (compte au statut `deleted`, uniquement si `status` est activé).
-- Si `status` est activé : `user.is_verified`, `user.is_unauthorized`, et les méthodes `mark_as_verified()`, `mark_as_unverified()`, `mark_as_suspended()`, `deactivate_user()`, `delete_user()`.
+- Si `status` est activé : `user.is_verified`, `user.is_unauthorized`, et les méthodes `mark_as_verified()`, `mark_as_unverified()`, `mark_as_suspended()`, `deactivate_user()`, `delete_user()`. `is_active=False` et `is_unauthorized` (statuts `blocked`/`suspended`/`deleted`/`deactivated`) sont tous les deux vérifiés par `login`, `authenticate-user` et `verify-otp-and-login` : un compte désactivé/bloqué/suspendu ne peut plus obtenir de nouveau JWT (401), même avec le bon mot de passe/code.
 - Si `otp_secret` est activé et `OTP.USE_OTP` est `True` : `user.otp_token.generate_otp()` / `user.otp_token.verify_otp(code)`.
 
 ## Signal `user_logged_in`
@@ -340,6 +433,21 @@ def on_forge_auth_otp_requested(sender, request, user, otp_token, **kwargs):
     send_sms(user.phone_number, otp_token.otp_code)
 ```
 
+## Signal `password_reset_requested`
+
+`forge_auth.signals.password_reset_requested` est envoyé par `UserViewSet.request_password_reset` juste après la génération d'un token de réinitialisation, avant que la réponse ne soit renvoyée au client. Même principe que `otp_requested` : c'est le point d'extension prévu pour l'envoi effectif du lien/code (email, SMS...) — voir "Points non automatisés" ci-dessous.
+
+Arguments envoyés : `sender` (la classe `UserViewSet`), `request`, `user`, `token` (le token en clair, à inclure dans le lien envoyé à l'utilisateur — vérifié ensuite par `confirm-password-reset`).
+
+```python
+from django.dispatch import receiver
+from forge_auth.signals import password_reset_requested
+
+@receiver(password_reset_requested)
+def on_forge_auth_password_reset_requested(sender, request, user, token, **kwargs):
+    send_email(user.email, f"https://example.com/reset?username={user.username}&token={token}")
+```
+
 ## Avertissement sur les migrations
 
 Les migrations fournies (`0001_initial`, `0002_user_otp_secret_user_status`, `0003_otptoken`) ont été générées pour la configuration par défaut, c'est-à-dire `OPTIONAL_FIELDS = []` (les deux champs `status` et `otp_secret`, ainsi que le modèle `OtpToken`, existent en base).
@@ -352,16 +460,24 @@ Ces options de `FORGE_AUTH` sont validées au démarrage mais ne déclenchent au
 
 - `OTP.OTP_CANAL` : `obtain-otp` génère et stocke le code (`otp_token.otp_code`), mais ne l'envoie nulle part. L'envoi effectif (SMS, WhatsApp, email) est à la charge du projet hôte, via le signal `otp_requested` (voir plus haut) ou en surchargeant l'action `obtain_otp`.
 - `OTP.OTP_LIFETIME` : aucune expiration n'est vérifiée dans `verify_otp()`. À implémenter si nécessaire (comparaison avec `otp_token.updated_at`).
+- Envoi du token de réinitialisation de mot de passe (`request-password-reset`) : le token est généré et disponible via le signal `password_reset_requested` (voir plus haut), mais rien ne l'envoie par email/SMS par défaut — à brancher côté projet hôte.
 
-automatisatino realiser pour ces ancien issue
-- `CREDENTIALS_SUPERUSER` : stocké dans la configuration mais aucune commande de gestion ne l'utilise pour créer un superutilisateur automatiquement.
-- `GROUP_DEFAULT` et `GROUPS` : stockés dans la configuration mais aucun signal ne crée les groupes ni n'assigne `GROUP_DEFAULT` aux nouveaux utilisateurs.
+Automatisés (post_migrate, voir `signals.py`), malgré ce que suggérait une ancienne version de cette section :
+
+- `CREDENTIALS_SUPERUSER` : un superutilisateur est créé automatiquement au premier `migrate` si aucun n'existe déjà (receiver `create_superuser`).
+- `GROUPS` : les groupes listés sont créés automatiquement au `migrate` (receiver `initialize_groups`).
+- `GROUP_DEFAULT` : assigné automatiquement à tout nouvel utilisateur créé sans `groups` explicite (`UserManager.create_user`).
 
 ## Notes de sécurité
 
 - `OtpToken.verify_otp()` retourne toujours `True` lorsque `settings.DEBUG = True`, quel que soit le code fourni. Ne déployez jamais avec `DEBUG = True`.
 - Les cookies JWT (`JWT.VIA_HTTP_ONLY`) sont posés avec `secure=True` dès que `DEBUG = False`. En développement local sans HTTPS, gardez `DEBUG = True` pour que les cookies soient acceptés par le navigateur.
-- `rest_framework_simplejwt.token_blacklist` doit être dans `INSTALLED_APPS` pour que `logout` puisse réellement blacklister le refresh token (sinon l'appel échoue silencieusement, capturé par un `except Exception: pass`).
+- `rest_framework_simplejwt.token_blacklist` doit être dans `INSTALLED_APPS` pour que `logout`, `change-password` et `confirm-password-reset` puissent réellement blacklister les refresh tokens (sinon l'appel échoue silencieusement, capturé par un `except ImportError`/`except Exception: pass`).
+- `/users/` est protégé par `IsSelfOrAdmin` (voir plus haut) : un utilisateur non-staff ne peut lister, consulter, modifier ou supprimer que son propre compte.
+- `login`, `authenticate-user` et `verify-otp-and-login` vérifient `is_active` et `is_unauthorized` avant de délivrer un JWT : un compte désactivé/bloqué/suspendu/supprimé ne peut plus s'authentifier, même avec les bons identifiants.
+- Aucun débit n'est limité par défaut (voir "Throttling") : configurez `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]` pour vous protéger du brute force sur `login`/OTP/reset de mot de passe.
+- La force du mot de passe n'est vérifiée (création, `change-password`, `confirm-password-reset`) que si `AUTH_PASSWORD_VALIDATORS` est configuré côté projet hôte (`[]` par défaut dans Django, donc aucune validation sans configuration explicite — voir "Configuration rapide").
+- `change-password` et `confirm-password-reset` blacklistent les refresh tokens existants de l'utilisateur : les autres sessions ouvertes avec l'ancien mot de passe sont invalidées (nécessite `rest_framework_simplejwt.token_blacklist`, voir ci-dessus).
 
 ## Lancer les tests
 
@@ -378,8 +494,13 @@ La configuration de test se trouve dans `tests/settings.py` et `tests/urls.py`. 
 |---|---|
 | `tests/tests.py` | Endpoints DRF de bout en bout (déclaratif, via le package externe `django-forge-test` — `ForgeCase`/`ConfigForgeCase`, dépendance `dev`) : CRUD `users`/`groups`, login, logout, refresh, verify-email/phone, session-check. |
 | `tests/test_conf.py` | Validation de `ForgeAuthConfig` (`conf.py`) : clés inconnues, types invalides, valeurs par défaut. |
-| `tests/test_models.py` | `User`, `UserManager`, `StatusMixin`, `OtpToken`. |
+| `tests/test_models.py` | `User`, `UserManager` (dont `GROUP_DEFAULT`), `StatusMixin`, `OtpToken`. |
 | `tests/test_backends.py` | `MultiFieldBackend` (auth Django classique multi-champs). |
 | `tests/test_authentication.py` | `JWTAuthenticationFlexible` (JWT via cookie et/ou header). |
 | `tests/test_signals.py` | Signaux `user_logged_in`, `otp_requested`, et les receivers `post_migrate` (`create_superuser`, `initialize_groups`). |
+| `tests/test_f2fa_views.py` | Flux F2FA (`authenticate-user`, `verify-otp-and-login`) : accès anonyme, échec fermé si OTP désactivé. |
+| `tests/test_permissions.py` | `IsSelfOrAdmin` (IDOR sur `/users/`) et hachage du mot de passe sur `update()`. |
+| `tests/test_login_security.py` | Blocage du login (`is_active`/`is_unauthorized`) pour les comptes désactivés/bloqués/suspendus/supprimés. |
+| `tests/test_password_management.py` | `change-password`, `request-password-reset`, `confirm-password-reset`. |
+| `tests/test_refresh.py` | `refresh` accessible sans authentification préalable, synchronisation du cookie `access`. |
 | `tests/_helpers.py` | Utilitaires partagés (non collecté par pytest) : voir les docstrings pour les pièges de configuration en cours de test (`forge_auth_config.otp_conf`/`jwt_conf` figés au démarrage, non rafraîchis par `reset()`). |

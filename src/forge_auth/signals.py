@@ -55,30 +55,44 @@ Utilisation côté projet hôte :
 """
 
 
+password_reset_requested = Signal()
+"""
+Envoyé par ``UserViewSet.request_password_reset`` juste après la génération
+d'un token de réinitialisation de mot de passe, avant que la réponse ne soit
+renvoyée au client. C'est le point d'extension prévu pour l'envoi effectif du
+lien/code de réinitialisation (email, SMS...) — même principe que
+``otp_requested``, voir la section "Points non automatisés" du README.
+
+Arguments envoyés : ``sender`` (la classe ``UserViewSet``), ``request``,
+``user``, ``token`` (le token en clair, à inclure dans le lien envoyé à
+l'utilisateur — il est vérifié par ``UserViewSet.confirm_password_reset``).
+
+Utilisation côté projet hôte :
+
+    from django.dispatch import receiver
+    from forge_auth.signals import password_reset_requested
+
+    @receiver(password_reset_requested)
+    def on_forge_auth_password_reset_requested(sender, request, user, token, **kwargs):
+        send_email(user.email, f"https://example.com/reset?username={user.username}&token={token}")
+"""
+
+
 @receiver(post_migrate)
 def create_superuser(sender, **kwargs):
     logger.debug("create_superuser: signal post_migrate reçu (sender=%s)", sender)
     username_field = forge_auth_config.get_username_field()
     credentials = forge_auth_config.get("CREDENTIALS_SUPERUSER")
     if not User.objects.filter(is_superuser=True).exists():
-        try:
-            data = {
-                username_field: credentials.get('username'),
-                "password": credentials.get('password'),
-                "last_name":"Admin",
-                "first_name":"Auth default",
-            }
-        except AttributeError:
-            logger.error("CREDENTIALS_SUPERUSER non configuré correctement")
-            data = {
-                username_field: credentials.username,
-                "password": credentials.password,
-                "last_name":"Admin",
-                "first_name":"Auth default",
-            }
-        except Exception as e:
-            logger.error(f"Erreur lors de la récupération des credentials superuser : {e}")
-            return
+        # `credentials` est toujours une instance de CredentialSuperuserConf
+        # (voir ForgeAuthConfig._merge_conf) : jamais un dict, donc pas de
+        # `.get()` à tenter ici.
+        data = {
+            username_field: credentials.username,
+            "password": credentials.password,
+            "last_name": "Admin",
+            "first_name": "Auth default",
+        }
         try:
             user = User.objects.create_superuser(**data)
             logger.info(f"Super utilisateur créé avec success : {user}")

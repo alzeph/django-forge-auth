@@ -5,10 +5,12 @@ from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.request import Request
+from forge_auth.throttling import ForgeAuthScopedRateThrottle
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework import viewsets, permissions, mixins, serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
+from django.contrib.auth.tokens import default_token_generator
 from django.utils import timezone
 from django.conf import settings
 from forge_auth.serializers import (
@@ -17,15 +19,41 @@ from forge_auth.serializers import (
     ValidationError400Serializer,
     LoginSerializer, GroupSerializer, UserSerializer,
     UserSerializer, LoginSuccessSerializer,
-    RefreshSerializer, UsernameSerializer
+    RefreshSerializer, UsernameSerializer,
+    ChangePasswordSerializer, RequestPasswordResetSerializer,
+    ConfirmPasswordResetSerializer, DetailResponseSerializer,
 )
 from forge_auth.models import Group, OtpToken
 from forge_auth.conf import forge_auth_config
-from forge_auth.signals import user_logged_in, otp_requested
+from forge_auth.permissions import IsSelfOrAdmin
+from forge_auth.signals import user_logged_in, otp_requested, password_reset_requested
 
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
+
+
+def _revoke_outstanding_tokens(user) -> None:
+    """
+    Blackliste tous les refresh tokens actifs de *user*.
+
+    Utilisé après un changement ou une réinitialisation de mot de passe pour
+    invalider les autres sessions ouvertes avec l'ancien mot de passe.
+    No-op si `rest_framework_simplejwt.token_blacklist` n'est pas installé.
+    """
+    try:
+        from rest_framework_simplejwt.token_blacklist.models import (
+            BlacklistedToken, OutstandingToken,
+        )
+    except ImportError:
+        logger.debug("_revoke_outstanding_tokens: token_blacklist non installé, rien à faire")
+        return
+    outstanding = OutstandingToken.objects.filter(user=user)
+    count = 0
+    for token in outstanding:
+        _, created = BlacklistedToken.objects.get_or_create(token=token)
+        count += int(created)
+    logger.info("_revoke_outstanding_tokens: %d token(s) révoqué(s) pour user=%s", count, user)
 
 class GroupViewSet(
     mixins.ListModelMixin,
@@ -44,15 +72,26 @@ class GroupViewSet(
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserSerializer
+    # Déclaré ici (None = pas de limite) pour que `@action(..., throttle_scope=...)`
+    # puisse le surcharger par action : DRF exige que tout kwarg passé à
+    # `@action` corresponde à un attribut déjà existant sur la classe.
+    throttle_scope = None
     permission_classes = [permissions.IsAuthenticated]
     http_method_names = ['get', 'post', 'patch', 'put', 'delete']
 
     def get_permissions(self):
-        public_actions = ['create', 'obtain_otp', 'verify_email', 'verify_phone', 'login', 'authenticate_user', 'verify_otp_and_login']
+        public_actions = [
+            'create', 'obtain_otp', 'verify_email', 'verify_phone', 'login',
+            'authenticate_user', 'verify_otp_and_login', 'refresh',
+            'request_password_reset', 'confirm_password_reset',
+        ]
         if self.action in public_actions:
             permission_classes = [permissions.AllowAny]
         else:
-            permission_classes = [permissions.IsAuthenticated]
+            # IsSelfOrAdmin évite l'IDOR : sans elle, IsAuthenticated seul
+            # permettrait à n'importe quel utilisateur connecté de
+            # lire/modifier/supprimer n'importe quel autre utilisateur.
+            permission_classes = [permissions.IsAuthenticated, IsSelfOrAdmin]
         return [permission() for permission in permission_classes]
 
     def _verify_field(self, field_name: str, value: str, exclude_value: str = None):
@@ -148,7 +187,11 @@ class UserViewSet(viewsets.ModelViewSet):
             400: ValidationError400Serializer
         }
     )
-    @action(detail=False, methods=['post'], url_name='login', url_path=r'login', permission_classes=[permissions.AllowAny])
+    @action(
+        detail=False, methods=['post'], url_name='login', url_path=r'login',
+        permission_classes=[permissions.AllowAny],
+        throttle_classes=[ForgeAuthScopedRateThrottle], throttle_scope='forge_auth_login',
+    )
     def login(self, request, *args, **kwargs):
         logger.debug("login: tentative avec username=%s", request.data.get('username'))
         serializer = LoginSerializer(data=request.data)
@@ -235,7 +278,14 @@ class UserViewSet(viewsets.ModelViewSet):
         request=RefreshSerializer,
         responses={200: RefreshSerializer}
     )
-    @action(detail=False, methods=['post'], url_name='refresh', url_path=r'refresh')
+    @action(
+        detail=False, methods=['post'], url_name='refresh', url_path=r'refresh',
+        # Public : c'est justement l'endpoint qu'on appelle quand l'access
+        # token est expiré/absent, donc IsAuthenticated serait contradictoire
+        # (voir aussi le renouvellement silencieux dans JWTAuthenticationFlexible).
+        permission_classes=[permissions.AllowAny],
+        throttle_classes=[ForgeAuthScopedRateThrottle], throttle_scope='forge_auth_refresh',
+    )
     def refresh(self, request, *args, **kwargs):
         logger.debug("refresh: tentative de renouvellement de token")
         refresh = request.COOKIES.get("refresh") or request.data.get("refresh")
@@ -246,7 +296,20 @@ class UserViewSet(viewsets.ModelViewSet):
             logger.warning("refresh: token de rafraîchissement invalide")
             raise
         logger.info("refresh: nouveau token access généré")
-        return Response(serializer.validated_data, status=status.HTTP_200_OK)
+        response = Response(serializer.validated_data, status=status.HTTP_200_OK)
+        if forge_auth_config.jwt_conf.VIA_HTTP_ONLY:
+            # Sans ceci, le cookie "access" expiré n'était jamais remplacé :
+            # le nouvel access token n'existait qu'en JSON, incohérent avec
+            # un flux tout-en-cookie httponly.
+            response.set_cookie(
+                key="access",
+                value=serializer.validated_data["access"],
+                httponly=True,
+                secure=not settings.DEBUG,
+                samesite=settings.DEBUG and "Lax" or None,
+                path="/",
+            )
+        return response
     
     @extend_schema(
         operation_id="obtain-otp",
@@ -263,7 +326,11 @@ class UserViewSet(viewsets.ModelViewSet):
             ),
         },
     )
-    @action(detail=False, methods=['post'], url_name='obtain-otp', url_path=r'obtain-otp', permission_classes=[permissions.AllowAny])
+    @action(
+        detail=False, methods=['post'], url_name='obtain-otp', url_path=r'obtain-otp',
+        permission_classes=[permissions.AllowAny],
+        throttle_classes=[ForgeAuthScopedRateThrottle], throttle_scope='forge_auth_otp',
+    )
     def obtain_otp(self, request, *args, **kwargs):
         logger.debug("obtain_otp: demande pour username=%s", request.data.get('username'))
         if "otp_secret" not in forge_auth_config.optional_fields and forge_auth_config.otp_conf.USE_OTP:
@@ -296,7 +363,11 @@ class UserViewSet(viewsets.ModelViewSet):
         request=LoginSerializerF2FA_STEP1,
         responses={200: UserSerializer, 400: ValidationError400Serializer}
     )
-    @action(detail=False, methods=['post'], url_name='authenticate-user', url_path=r'authenticate-user', permission_classes=[permissions.AllowAny])
+    @action(
+        detail=False, methods=['post'], url_name='authenticate-user', url_path=r'authenticate-user',
+        permission_classes=[permissions.AllowAny],
+        throttle_classes=[ForgeAuthScopedRateThrottle], throttle_scope='forge_auth_login',
+    )
     def authenticate_user(self, request, *args, **kwargs):
         logger.debug("authenticate_user: tentative pour username=%s", request.data.get('username'))
         serializer = LoginSerializerF2FA_STEP1(data=request.data)
@@ -316,7 +387,11 @@ class UserViewSet(viewsets.ModelViewSet):
         request=LoginSerializerF2FA_STEP2,
         responses={200: UserSerializer, 400: ValidationError400Serializer}
     )
-    @action(detail=False, methods=['post'], url_name='verify-otp-and-login', url_path=r'verify-otp-and-login', permission_classes=[permissions.AllowAny])
+    @action(
+        detail=False, methods=['post'], url_name='verify-otp-and-login', url_path=r'verify-otp-and-login',
+        permission_classes=[permissions.AllowAny],
+        throttle_classes=[ForgeAuthScopedRateThrottle], throttle_scope='forge_auth_otp',
+    )
     def verify_otp_and_login(self, request, *args, **kwargs):
         logger.debug("verify_otp_and_login: tentative pour username=%s", request.data.get('username'))
         serializer = LoginSerializerF2FA_STEP2(data=request.data)
@@ -357,6 +432,90 @@ class UserViewSet(viewsets.ModelViewSet):
                 path="/",
             )
         return response
-    
 
+    @extend_schema(
+        operation_id="change-password",
+        summary="Changer son mot de passe",
+        description="Permet à l'utilisateur authentifié de changer son mot de passe (ancien mot de passe requis). Révoque les autres sessions (refresh tokens) si rest_framework_simplejwt.token_blacklist est installé.",
+        request=ChangePasswordSerializer,
+        responses={200: DetailResponseSerializer, 400: ValidationError400Serializer}
+    )
+    @action(detail=False, methods=['post'], url_name='change-password', url_path=r'change-password')
+    def change_password(self, request, *args, **kwargs):
+        logger.debug("change_password: tentative pour user=%s", request.user)
+        serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception:
+            logger.warning("change_password: échec pour user=%s", request.user)
+            raise
+        serializer.save()
+        _revoke_outstanding_tokens(request.user)
+        logger.info("change_password: mot de passe changé pour user=%s", request.user)
+        return Response({"detail": "Mot de passe changé avec succès."}, status=status.HTTP_200_OK)
 
+    @extend_schema(
+        operation_id="request-password-reset",
+        summary="Demande de réinitialisation de mot de passe",
+        description=(
+            "Génère un token de réinitialisation et envoie le signal "
+            "password_reset_requested (l'envoi effectif du lien/code par "
+            "email/SMS est à la charge du projet hôte, voir la doc du signal)."
+        ),
+        request=RequestPasswordResetSerializer,
+        responses={
+            200: DetailResponseSerializer,
+            404: OpenApiResponse(description="User not found"),
+        },
+    )
+    @action(
+        detail=False, methods=['post'], url_name='request-password-reset', url_path=r'request-password-reset',
+        permission_classes=[permissions.AllowAny],
+        throttle_classes=[ForgeAuthScopedRateThrottle], throttle_scope='forge_auth_password_reset',
+    )
+    def request_password_reset(self, request, *args, **kwargs):
+        logger.debug("request_password_reset: demande pour username=%s", request.data.get('username'))
+        serializer = RequestPasswordResetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        username = serializer.validated_data['username']
+        try:
+            user = User.get(username)
+        except User.DoesNotExist:
+            logger.warning("request_password_reset: utilisateur introuvable pour username=%s", username)
+            return Response({"detail": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        except PermissionError as exc:
+            logger.warning("request_password_reset: accès refusé pour username=%s : %s", username, exc)
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+        token = default_token_generator.make_token(user)
+        logger.info("request_password_reset: token généré pour user=%s", user)
+        password_reset_requested.send(sender=self.__class__, request=request, user=user, token=token)
+        return Response({"detail": "Un token de réinitialisation a été généré."}, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        operation_id="confirm-password-reset",
+        summary="Confirmation de réinitialisation de mot de passe",
+        description="Vérifie le token émis par request-password-reset et applique le nouveau mot de passe.",
+        request=ConfirmPasswordResetSerializer,
+        responses={
+            200: DetailResponseSerializer,
+            401: OpenApiResponse(description="Token invalide ou expiré"),
+        },
+    )
+    @action(
+        detail=False, methods=['post'], url_name='confirm-password-reset', url_path=r'confirm-password-reset',
+        permission_classes=[permissions.AllowAny],
+        throttle_classes=[ForgeAuthScopedRateThrottle], throttle_scope='forge_auth_password_reset',
+    )
+    def confirm_password_reset(self, request, *args, **kwargs):
+        logger.debug("confirm_password_reset: tentative pour username=%s", request.data.get('username'))
+        serializer = ConfirmPasswordResetSerializer(data=request.data)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception:
+            logger.warning("confirm_password_reset: échec pour username=%s", request.data.get('username'))
+            raise
+        user = serializer.save()
+        _revoke_outstanding_tokens(user)
+        logger.info("confirm_password_reset: mot de passe réinitialisé pour user=%s", user)
+        return Response({"detail": "Mot de passe réinitialisé avec succès."}, status=status.HTTP_200_OK)

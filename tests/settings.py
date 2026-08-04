@@ -40,6 +40,17 @@ AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",
 ]
 
+# AUTH_PASSWORD_VALIDATORS est [] par défaut dans Django (contrairement au
+# settings.py généré par `startproject`) : on reprend ici la configuration
+# standard pour exercer la validation de mot de passe de forge_auth
+# (UserSerializer.update, change-password, confirm-password-reset).
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
 # Configuration FORGE_AUTH par défaut pour les tests.
 # A adapter selon le scénario testé (OPTIONAL_FIELDS, USERNAME_FIELD, etc.).
 FORGE_AUTH = {}

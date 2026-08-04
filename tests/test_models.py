@@ -45,6 +45,26 @@ class UserManagerTestCase(TestCase):
         self.assertTrue(user.is_staff)
         self.assertTrue(user.is_superuser)
 
+    def test_create_user_assigns_group_default_when_no_groups_given(self):
+        with forge_auth_override(GROUP_DEFAULT="clients"):
+            user = User.objects.create_user(phone_number="+225000000004", password="qwerty123")
+        self.assertTrue(user.groups.filter(name="clients").exists())
+
+    def test_group_default_not_applied_when_groups_explicitly_given(self):
+        from django.contrib.auth.models import Group
+
+        explicit_group = Group.objects.create(name="explicit")
+        with forge_auth_override(GROUP_DEFAULT="clients"):
+            user = User.objects.create_user(
+                phone_number="+225000000005", password="qwerty123", groups=[explicit_group],
+            )
+        self.assertIn(explicit_group, user.groups.all())
+        self.assertFalse(user.groups.filter(name="clients").exists())
+
+    def test_no_group_default_configured_assigns_nothing(self):
+        user = User.objects.create_user(phone_number="+225000000006", password="qwerty123")
+        self.assertEqual(user.groups.count(), 0)
+
 
 class UserPropertiesTestCase(TestCase):
     def setUp(self):
